@@ -15,7 +15,7 @@ Turn a plain-language furniture idea into a dimensionally accurate, buildable pl
 
 ```bash
 npm install
-cp .env.example .env.local   # add your ANTHROPIC_API_KEY
+cp .env.example .env.local   # add your OPENAI_API_KEY
 npm run dev
 ```
 
@@ -27,7 +27,7 @@ Open [http://localhost:3000](http://localhost:3000). Without an API key everythi
 - `lib/geometry/builder.ts` — pure spec → render data; no three.js import, unit-testable.
 - `lib/pdf/` — pure projections (axis-dropping + vector isometric) and boundary-chain dimensions (chains provably sum to the overall), drawn with pdf-lib entirely client-side.
 - `lib/cutlist.ts` — derived cut list, grouped by material + dimensions + grain.
-- `app/api/generate/route.ts` — the only LLM touchpoint: Claude structured outputs constrained to the spec schema, validated server-side with one automatic retry on concrete errors.
+- `app/api/generate/route.ts` — the only LLM touchpoint: OpenAI JSON mode constrained by the prompt's worked example, validated server-side (Zod + cross-field rules) with one automatic retry on concrete errors.
 - `components/` + `store/useSpecStore.ts` — React Three Fiber viewport and zustand/zundo editing state.
 
 ```bash

@@ -1,5 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import OpenAI from "openai";
 import { z } from "zod";
 import { NextResponse } from "next/server";
 import { FurnitureSpecSchema, type FurnitureSpec } from "@/lib/spec/schema";
@@ -17,7 +16,7 @@ const RequestSchema = z.object({
   currentSpec: FurnitureSpecSchema.optional(),
 });
 
-const MODEL = "claude-opus-4-8";
+const MODEL = process.env.OPENAI_MODEL ?? "gpt-5.1";
 
 interface Attempt {
   spec?: FurnitureSpec;
@@ -28,27 +27,26 @@ interface Attempt {
 }
 
 async function attemptGeneration(
-  client: Anthropic,
-  messages: Anthropic.MessageParam[]
+  client: OpenAI,
+  messages: OpenAI.ChatCompletionMessageParam[]
 ): Promise<Attempt> {
-  const stream = client.messages.stream({
+  // JSON mode + our own Zod/cross-field validation with a feedback retry.
+  // (Strict structured outputs would require making every optional field
+  // nullable in the schema; the retry loop covers the difference.)
+  const completion = await client.chat.completions.create({
     model: MODEL,
-    max_tokens: 32000,
-    thinking: { type: "adaptive" },
-    output_config: { format: zodOutputFormat(FurnitureSpecSchema) },
-    system: [
-      { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-    ],
-    messages,
+    max_completion_tokens: 32000,
+    response_format: { type: "json_object" },
+    messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
   });
-  const message = await stream.finalMessage();
 
-  if (message.stop_reason === "refusal") {
+  const choice = completion.choices[0];
+  if (!choice || choice.finish_reason === "content_filter") {
     return { errors: [], raw: "", refusal: true };
   }
 
-  const text = message.content.find((b) => b.type === "text")?.text ?? "";
-  if (message.stop_reason === "max_tokens" || !text) {
+  const text = choice.message.content ?? "";
+  if (choice.finish_reason === "length" || !text) {
     return {
       errors: [{ code: "truncated", message: "model output was empty or truncated" }],
       raw: text,
@@ -78,9 +76,9 @@ async function attemptGeneration(
 }
 
 export async function POST(request: Request) {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!process.env.OPENAI_API_KEY) {
     return NextResponse.json(
-      { error: "Server is missing ANTHROPIC_API_KEY." },
+      { error: "Server is missing OPENAI_API_KEY." },
       { status: 500 }
     );
   }
@@ -91,8 +89,8 @@ export async function POST(request: Request) {
   }
   const { prompt, currentSpec } = body.data;
 
-  const client = new Anthropic();
-  const messages: Anthropic.MessageParam[] = [
+  const client = new OpenAI();
+  const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: "user", content: buildUserMessage(prompt, currentSpec) },
   ];
 
@@ -129,13 +127,13 @@ export async function POST(request: Request) {
     const { warnings } = validateSpec(attempt.spec);
     return NextResponse.json({ spec: attempt.spec, warnings });
   } catch (error) {
-    if (error instanceof Anthropic.RateLimitError) {
+    if (error instanceof OpenAI.RateLimitError) {
       return NextResponse.json(
         { error: "Rate limited — wait a moment and try again." },
         { status: 429 }
       );
     }
-    if (error instanceof Anthropic.APIError) {
+    if (error instanceof OpenAI.APIError) {
       return NextResponse.json(
         { error: `Generation service error (${error.status}).` },
         { status: 502 }
