@@ -42,6 +42,9 @@ export function ExportButton() {
         {busy ? "Drawing…" : "Export PDF plan"}
       </button>
       {error && <p className="max-w-[200px] text-right text-[11px] text-red-600">{error}</p>}
+      <p className="rounded bg-white/80 px-1.5 py-0.5 text-[10px] text-slate-500 backdrop-blur">
+        Measured from your model, not drawn by AI.
+      </p>
     </div>
   );
 }
