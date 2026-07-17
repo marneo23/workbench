@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Viewport } from "./Viewport";
 import { PartsPanel } from "./PartsPanel";
 import { ExportButton } from "./ExportButton";
+import { PromptBar } from "./PromptBar";
 import { redoSpec, undoSpec, useSpecStore } from "@/store/useSpecStore";
 import { validateSpec } from "@/lib/spec/validate";
 
@@ -74,6 +75,8 @@ export function Editor() {
         <div className="absolute bottom-4 right-4">
           <ExportButton />
         </div>
+
+        <PromptBar />
 
         {warnings.length > 0 && (
           <div className="absolute right-4 top-4 max-w-xs rounded-lg bg-amber-50/95 p-3 shadow backdrop-blur">
