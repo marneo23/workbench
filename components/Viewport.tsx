@@ -33,7 +33,7 @@ export function Viewport({
 
   return (
     <Canvas
-      camera={{ position: camPos, fov: 40, near: 10, far: 50000 }}
+      camera={{ position: camPos, fov: 40, near: diag * 0.02, far: diag * 12 }}
       onPointerMissed={() => onSelectPart(null)}
       className="h-full w-full"
     >
@@ -54,16 +54,19 @@ export function Viewport({
       {showScaleFigure && <ScaleFigure offsetX={model.bbox.w / 2 + 450} />}
       {showDimensions && <DimensionOverlay bbox={model.bbox} />}
 
+      {/* Finite grid, everything scaled to the model: an infinite grid with a
+          fixed huge fade range shimmers/crawls badly at mm scale. */}
       <Grid
-        position={[0, -1, 0]}
-        args={[20000, 20000]}
+        position={[0, -2, 0]}
+        args={[diag * 6, diag * 6]}
         cellSize={100}
+        cellThickness={0.6}
         cellColor="#cbd5e1"
         sectionSize={1000}
+        sectionThickness={1}
         sectionColor="#94a3b8"
-        fadeDistance={12000}
-        fadeStrength={2}
-        infiniteGrid
+        fadeDistance={diag * 3}
+        fadeStrength={2.5}
       />
       <OrbitControls
         makeDefault
