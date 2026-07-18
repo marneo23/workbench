@@ -17,6 +17,9 @@ const MIN_PART_DIM = 3; // mm — anything thinner is unbuildable
 const MAX_BBOX = 4000; // mm — larger than any room furniture
 const MIN_BBOX = 50; // mm — smaller than any furniture on all axes
 const TOUCH_TOLERANCE = 1; // mm gap that still counts as "touching"
+// An overlap taking up to this fraction of the smaller part reads as a joint
+// (rail tenoned into a leg), not an arithmetic mistake.
+const JOINERY_MAX_FRACTION = 0.35;
 
 function dims(p: Part): [number, number, number] {
   return [p.size.w, p.size.h, p.size.d];
@@ -132,6 +135,7 @@ export function validateSpec(spec: FurnitureSpec): ValidationResult {
   // Pairwise checks; only meaningful once sizes are sane.
 
   const sane = spec.parts.filter((p) => dims(p).every((v) => v > 0));
+  const joineryPairs: string[] = [];
   for (let i = 0; i < sane.length; i++) {
     for (let j = i + 1; j < sane.length; j++) {
       const a = sane[i];
@@ -139,11 +143,20 @@ export function validateSpec(spec: FurnitureSpec): ValidationResult {
       const pen = penetration(a, b);
 
       if (pen.every((v) => v > TOUCH_TOLERANCE)) {
-        warnings.push({
-          code: "parts-overlap",
-          partId: a.id,
-          message: `parts "${a.id}" and "${b.id}" overlap by ${pen.map((v) => Math.round(v)).join("×")}mm`,
-        });
+        const intersection = pen[0] * pen[1] * pen[2];
+        const smallerVolume = Math.min(
+          a.size.w * a.size.h * a.size.d,
+          b.size.w * b.size.h * b.size.d
+        );
+        if (intersection <= JOINERY_MAX_FRACTION * smallerVolume) {
+          joineryPairs.push(`"${a.id}"→"${b.id}"`);
+        } else {
+          warnings.push({
+            code: "parts-overlap",
+            partId: a.id,
+            message: `parts "${a.id}" and "${b.id}" overlap by ${pen.map((v) => Math.round(v)).join("×")}mm`,
+          });
+        }
       }
 
       const samePlace =
@@ -162,6 +175,18 @@ export function validateSpec(spec: FurnitureSpec): ValidationResult {
         });
       }
     }
+  }
+
+  if (joineryPairs.length > 0) {
+    const sample = joineryPairs.slice(0, 3).join(", ");
+    warnings.push({
+      code: "joinery-overlaps",
+      message: `${joineryPairs.length} small part-into-part overlap${
+        joineryPairs.length > 1 ? "s" : ""
+      } look like joinery (${sample}${
+        joineryPairs.length > 3 ? ", …" : ""
+      }) — cut lengths assume the full overlapped length`,
+    });
   }
 
   for (const p of sane) {

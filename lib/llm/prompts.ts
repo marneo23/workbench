@@ -25,6 +25,8 @@ You output ONLY a JSON furniture spec matching exactly the shape defined and dem
 - Standard dimensions: desk height 730–760mm; dining table 740–760mm; bookshelf depth 250–350mm; desk depth 600–800mm; wardrobe depth 560–600mm; bedside table height 500–600mm; hanging space needs >= 900mm clear height.
 - Interior width between two sides = bbox.w − 2 × side thickness. Shelves span the interior width and sit BETWEEN the sides, never overlapping them.
 - Overlaid back construction: the carcass is (bbox.d − back thickness) deep, and the back panel covers the full rear (position.z = bbox.d − back thickness). This keeps parts from overlapping.
+- Frame furniture (chairs, stools, tables with legs): legs are vertical posts at the corners, typically 40×40mm solid wood. Rails, aprons, and stretchers span BETWEEN the legs and abut their inner faces — they never overlap the legs. Derive rail lengths like interior widths: with bbox.w = 560 and 40mm legs, a front rail is 560 − 2×40 = 480 long at x = 40. A seat panel rests ON the rails/legs: its underside y equals the rail top. Armrests sit on top of front-to-back supports or the back legs.
+- Parts must never occupy the same space. Model joints as faces touching (abutting), not as parts penetrating each other.
 - Give every part a stable kebab-case id ("side-left", "shelf-2") and a human name. Reuse one material entry for all parts of the same stock.
 - Parts must physically connect: a shelf touches both sides, a top rests on the sides. No floating parts, no duplicate parts occupying the same space.
 - Prefer round-number positions (spacing to whole mm).
@@ -60,7 +62,7 @@ Spec (abbreviated to show the shape — yours must be complete):
   "notes": "Fixed shelves housed between the sides. Back overlays the carcass rear."
 }
 
-Before emitting, verify your own arithmetic the same way: for each part check position + size against the bbox, check sheet thicknesses, check that shelves equal the interior width.
+Before emitting, verify your own arithmetic the same way: for each part check position + size against the bbox, check sheet thicknesses, check that shelves and rails equal the interior span (never overlapping the parts they meet), and check that no two parts occupy the same space.
 
 ## Refining an existing spec
 

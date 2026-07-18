@@ -43,3 +43,7 @@ next-env.d.ts
 
 .vercel
 .env*
+
+# local-only review material and samples
+/_for-claude/
+/bookshelf-sample.pdf

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSpecStore } from "@/store/useSpecStore";
 import { bookshelfSpec } from "@/lib/spec/examples";
 import { FurnitureSpecSchema } from "@/lib/spec/schema";
@@ -19,7 +19,15 @@ export function PromptBar() {
   const setError = useSpecStore((s) => s.setError);
 
   const [prompt, setPrompt] = useState("");
+  const [elapsed, setElapsed] = useState(0);
   const generating = status === "generating";
+
+  useEffect(() => {
+    if (!generating) return;
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [generating]);
   // Untouched example → new design; anything else → refinement.
   const pristine = spec === bookshelfSpec;
 
@@ -88,8 +96,8 @@ export function PromptBar() {
         </button>
       </div>
       {generating && (
-        <p className="mt-1.5 text-center text-[11px] text-slate-500">
-          Deriving dimensions — this can take a minute for complex pieces.
+        <p className="mt-1.5 text-center text-[11px] tabular-nums text-slate-500">
+          Deriving dimensions… {elapsed}s · typically 30–90s for complex pieces.
         </p>
       )}
     </div>

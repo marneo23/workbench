@@ -107,6 +107,48 @@ describe("validateSpec warnings", () => {
     expect(warnings.map((w) => w.code)).toContain("parts-overlap");
   });
 
+  it("collapses small rail-into-leg overlaps into one joinery warning", () => {
+    // two legs + one rail whose ends run 40mm into each leg (tenon-style)
+    const spec: FurnitureSpec = {
+      version: 1,
+      name: "Frame",
+      units: "mm",
+      bbox: { w: 700, h: 700, d: 200 },
+      materials: [{ id: "oak", name: "40mm oak", kind: "solid" }],
+      parts: [
+        {
+          id: "leg-a",
+          name: "Leg A",
+          shape: "box",
+          size: { w: 40, h: 700, d: 40 },
+          position: { x: 0, y: 0, z: 0 },
+          materialId: "oak",
+        },
+        {
+          id: "leg-b",
+          name: "Leg B",
+          shape: "box",
+          size: { w: 40, h: 700, d: 40 },
+          position: { x: 660, y: 0, z: 0 },
+          materialId: "oak",
+        },
+        {
+          id: "rail",
+          name: "Rail",
+          shape: "box",
+          size: { w: 700, h: 80, d: 40 },
+          position: { x: 0, y: 300, z: 0 },
+          materialId: "oak",
+        },
+      ],
+    };
+    const { warnings } = validateSpec(spec);
+    const joinery = warnings.filter((w) => w.code === "joinery-overlaps");
+    expect(joinery).toHaveLength(1); // collapsed, not one per pair
+    expect(joinery[0].message).toContain("2 small part-into-part overlaps");
+    expect(warnings.map((w) => w.code)).not.toContain("parts-overlap");
+  });
+
   it("warns on near-duplicate parts", () => {
     const spec = clone(bookshelfSpec);
     spec.parts.push({ ...clone(spec.parts[4]), id: "shelf-1-copy" });
