@@ -110,6 +110,9 @@ export function PartsPanel() {
         <h2 className="px-1 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
           Parts · {spec.parts.length}
         </h2>
+        <p className="px-1 pb-1 text-[11px] leading-snug text-slate-400">
+          Select a part to get drag arrows in the 3D view, or edit its numbers here.
+        </p>
         {spec.parts.map((part) => (
           <PartRow key={part.id} part={part} selected={part.id === selectedPartId} />
         ))}

@@ -1,13 +1,42 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import * as THREE from "three";
 import { Canvas } from "@react-three/fiber";
-import { Grid, OrbitControls } from "@react-three/drei";
+import { Grid, OrbitControls, TransformControls } from "@react-three/drei";
 import { buildRenderModel } from "@/lib/geometry/builder";
 import type { FurnitureSpec } from "@/lib/spec/schema";
+import { useSpecStore } from "@/store/useSpecStore";
 import { PartMesh } from "./PartMesh";
 import { ScaleFigure } from "./ScaleFigure";
 import { DimensionOverlay } from "./DimensionOverlay";
+import { ResizeGizmo } from "./ResizeGizmo";
+
+/** Scale figure wrapped in a translate gizmo constrained to the floor plane. */
+function DraggableScaleFigure({ defaultX }: { defaultX: number }) {
+  const pos = useSpecStore((s) => s.scaleFigurePos);
+  const setPos = useSpecStore((s) => s.setScaleFigurePos);
+  const [obj, setObj] = useState<THREE.Group | null>(null);
+  const x = pos?.[0] ?? defaultX;
+  const z = pos?.[1] ?? 0;
+
+  return (
+    <>
+      <group ref={setObj} position={[x, 0, z]}>
+        <ScaleFigure offsetX={0} />
+      </group>
+      {obj && (
+        <TransformControls
+          object={obj}
+          mode="translate"
+          showY={false}
+          size={0.6}
+          onObjectChange={() => setPos([obj.position.x, obj.position.z])}
+        />
+      )}
+    </>
+  );
+}
 
 interface ViewportProps {
   spec: FurnitureSpec;
@@ -30,6 +59,8 @@ export function Viewport({
   const diag = Math.hypot(model.bbox.w, model.bbox.h, model.bbox.d);
   const camPos: [number, number, number] = [diag * 1.1, diag * 0.75, diag * 1.1];
   const target: [number, number, number] = [0, model.bbox.h / 2, 0];
+  const handleSize = Math.min(Math.max(diag * 0.04, 15), 90);
+  const selectedPart = spec.parts.find((p) => p.id === selectedPartId);
 
   return (
     <Canvas
@@ -51,7 +82,11 @@ export function Viewport({
         />
       ))}
 
-      {showScaleFigure && <ScaleFigure offsetX={model.bbox.w / 2 + 450} />}
+      {selectedPart && (
+        <ResizeGizmo part={selectedPart} offset={model.offset} handleSize={handleSize} />
+      )}
+
+      {showScaleFigure && <DraggableScaleFigure defaultX={model.bbox.w / 2 + 450} />}
       {showDimensions && <DimensionOverlay bbox={model.bbox} />}
 
       {/* Finite grid, everything scaled to the model: an infinite grid with a
