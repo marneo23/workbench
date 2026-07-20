@@ -145,11 +145,13 @@ const LABEL_SIZE = 5.5;
 
 /**
  * One dimension chain (ticks at every part boundary, label per segment) plus
- * the overall dimension further out. Complete and deterministic — labels for
- * narrow segments drop to the far side of the chain line.
+ * the overall dimension further out. Complete and deterministic — a segment
+ * too narrow for its label (a panel thickness like 18 or 6) moves its number
+ * outboard into clear space with a thin leader, instead of cramming it
+ * between the extension lines.
  */
 function drawChain(opts: ChainOpts) {
-  const { page, fonts, bounds, scale, viewX, viewY, viewExtent, placement, viewDepth } = opts;
+  const { page, fonts, bounds, scale, viewX, viewY, placement, viewDepth } = opts;
   const segments = chain(bounds);
   const overall = bounds[bounds.length - 1] - bounds[0];
   const horizontal = placement === "bottom" || placement === "top";
@@ -195,24 +197,35 @@ function drawChain(opts: ChainOpts) {
   drawTicksAndLine(chainPos, bounds);
   drawTicksAndLine(overallPos, [bounds[0], bounds[bounds.length - 1]]);
 
-  const label = (
-    value: number,
-    midModel: number,
-    linePos: number,
-    paperLen: number
-  ) => {
+  const hText = LABEL_SIZE * 0.9 * 0.3528; // pt→mm cap height approx
+  const chainMidModel = (bounds[0] + bounds[bounds.length - 1]) / 2;
+
+  const placeLabel = (value: number, fromModel: number, toModel: number, linePos: number) => {
     const str = formatMm(value);
     const wText = fonts.regular.widthOfTextAtSize(str, LABEL_SIZE) / MM;
-    const hText = LABEL_SIZE * 0.9 * 0.3528; // pt→mm cap height approx
+    const midModel = (fromModel + toModel) / 2;
     const mid = along(midModel);
+    const paperLen = Math.abs(along(toModel) - along(fromModel));
     const fits = wText + 1.5 <= paperLen;
+
     if (horizontal) {
-      // normal: just above the line (relative to dir); narrow: on the far side
-      const y = fits ? linePos + dir * 1.2 : linePos - dir * (1.2 + hText);
-      text(page, str, mid - wText / 2, dir === -1 ? y - (fits ? hText : 0) : y, LABEL_SIZE, fonts.regular);
+      const y = linePos + dir * 1.2;
+      const baseY = dir === -1 ? y - hText : y;
+      if (fits) {
+        text(page, str, mid - wText / 2, baseY, LABEL_SIZE, fonts.regular);
+        return;
+      }
+      // Too narrow: move the number outboard past the segment end that faces
+      // away from the chain centre, and draw a thin leader back to the segment.
+      const so = midModel <= chainMidModel ? -1 : 1;
+      const outerPaper = so < 0 ? along(fromModel) : along(toModel);
+      const labelX = so < 0 ? outerPaper - 1.5 - wText : outerPaper + 1.5;
+      text(page, str, labelX, baseY, LABEL_SIZE, fonts.regular);
+      const nearX = so < 0 ? labelX + wText : labelX;
+      line(page, mid, linePos, nearX, baseY + hText / 2, 0.25, MUTED);
     } else {
+      // Vertical chains keep the rotated far-side placement.
       const x = fits ? linePos - dir * 1.2 : linePos + dir * (1.2 + hText);
-      // rotated 90°: anchor is bottom-left of rotated text → offset along the chain
       text(
         page,
         str,
@@ -227,9 +240,9 @@ function drawChain(opts: ChainOpts) {
   };
 
   for (const s of segments) {
-    label(s.length, (s.from + s.to) / 2, chainPos, (s.to - s.from) / scale);
+    placeLabel(s.length, s.from, s.to, chainPos);
   }
-  label(overall, (bounds[0] + bounds[bounds.length - 1]) / 2, overallPos, viewExtent);
+  placeLabel(overall, bounds[0], bounds[bounds.length - 1], overallPos);
 }
 
 function drawTitlePage(page: PDFPage, spec: FurnitureSpec, fonts: Fonts) {
