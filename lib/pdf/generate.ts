@@ -224,18 +224,24 @@ function drawChain(opts: ChainOpts) {
       const nearX = so < 0 ? labelX + wText : labelX;
       line(page, mid, linePos, nearX, baseY + hText / 2, 0.25, MUTED);
     } else {
-      // Vertical chains keep the rotated far-side placement.
-      const x = fits ? linePos - dir * 1.2 : linePos + dir * (1.2 + hText);
-      text(
-        page,
-        str,
-        dir === -1 ? x + (fits ? hText : 0) : x,
-        mid - wText / 2,
-        LABEL_SIZE,
-        fonts.regular,
-        INK,
-        90
-      );
+      // Vertical chain: rotated text. The number column sits just off the line.
+      const xFits = linePos - dir * 1.2;
+      const drawX = dir === -1 ? xFits + hText : xFits;
+      if (fits) {
+        text(page, str, drawX, mid - wText / 2, LABEL_SIZE, fonts.regular, INK, 90);
+        return;
+      }
+      // Too narrow: pushing outboard here would land in the crowded corner, so
+      // shift the number into the roomier adjacent gap and add a leader.
+      const i = bounds.indexOf(fromModel);
+      const prevLen = i > 0 ? bounds[i] - bounds[i - 1] : -Infinity;
+      const nextLen = i + 2 < bounds.length ? bounds[i + 2] - bounds[i + 1] : -Infinity;
+      const towardTo = nextLen >= prevLen; // move toward the larger neighbour
+      const anchorY = along(towardTo ? toModel : fromModel);
+      const y = towardTo ? anchorY + 1.5 : anchorY - 1.5 - wText;
+      text(page, str, drawX, y, LABEL_SIZE, fonts.regular, INK, 90);
+      const nearY = towardTo ? y : y + wText;
+      line(page, linePos, mid, drawX - hText / 2, nearY, 0.25, MUTED);
     }
   };
 

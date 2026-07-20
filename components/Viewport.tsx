@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef } from "react";
 import * as THREE from "three";
-import { Canvas } from "@react-three/fiber";
-import { Grid, OrbitControls, TransformControls } from "@react-three/drei";
+import { Canvas, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Grid, OrbitControls } from "@react-three/drei";
 import { buildRenderModel } from "@/lib/geometry/builder";
 import type { FurnitureSpec } from "@/lib/spec/schema";
 import { useSpecStore } from "@/store/useSpecStore";
@@ -12,29 +12,63 @@ import { ScaleFigure } from "./ScaleFigure";
 import { DimensionOverlay } from "./DimensionOverlay";
 import { ResizeGizmo } from "./ResizeGizmo";
 
-/** Scale figure wrapped in a translate gizmo constrained to the floor plane. */
+/**
+ * Scale figure you grab and slide along the floor — no gizmo arrows. Press
+ * anywhere on the figure and drag; the pointer is tracked against the floor
+ * plane so the grabbed point stays under the cursor.
+ */
 function DraggableScaleFigure({ defaultX }: { defaultX: number }) {
   const pos = useSpecStore((s) => s.scaleFigurePos);
   const setPos = useSpecStore((s) => s.setScaleFigurePos);
-  const [obj, setObj] = useState<THREE.Group | null>(null);
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  const controls = useThree((s) => s.controls) as { enabled: boolean } | null;
+  const plane = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)); // floor y=0
+  const raycaster = useRef(new THREE.Raycaster());
+  const grab = useRef(new THREE.Vector2()); // (x, z) offset from figure origin to grab point
+
   const x = pos?.[0] ?? defaultX;
   const z = pos?.[1] ?? 0;
 
+  const onDown = (e: ThreeEvent<PointerEvent>) => {
+    e.stopPropagation();
+    const hit = new THREE.Vector3();
+    if (!e.ray.intersectPlane(plane.current, hit)) return;
+    grab.current.set(hit.x - x, hit.z - z);
+    if (controls) controls.enabled = false;
+    document.body.style.cursor = "grabbing";
+
+    const move = (ev: PointerEvent) => {
+      const rect = gl.domElement.getBoundingClientRect();
+      const ndc = new THREE.Vector2(
+        ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+        -((ev.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      raycaster.current.setFromCamera(ndc, camera);
+      const p = new THREE.Vector3();
+      if (raycaster.current.ray.intersectPlane(plane.current, p)) {
+        setPos([p.x - grab.current.x, p.z - grab.current.y]);
+      }
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (controls) controls.enabled = true;
+      document.body.style.cursor = "";
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
   return (
-    <>
-      <group ref={setObj} position={[x, 0, z]}>
-        <ScaleFigure offsetX={0} />
-      </group>
-      {obj && (
-        <TransformControls
-          object={obj}
-          mode="translate"
-          showY={false}
-          size={0.6}
-          onObjectChange={() => setPos([obj.position.x, obj.position.z])}
-        />
-      )}
-    </>
+    <group
+      position={[x, 0, z]}
+      onPointerDown={onDown}
+      onPointerOver={() => (document.body.style.cursor = "grab")}
+      onPointerOut={() => (document.body.style.cursor = "")}
+    >
+      <ScaleFigure offsetX={0} />
+    </group>
   );
 }
 
