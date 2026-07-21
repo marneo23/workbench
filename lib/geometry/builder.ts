@@ -1,4 +1,4 @@
-import type { FurnitureSpec } from "@/lib/spec/schema";
+import type { FurnitureSpec, Material, Part, Size3 } from "@/lib/spec/schema";
 
 /**
  * Pure spec → render-data conversion. No three.js imports — returns plain
@@ -32,11 +32,11 @@ const SOLID_PALETTE = ["#a97c50", "#8f6844", "#c19467"];
 const ROD_COLOR = "#9aa0a6";
 
 /** Stable color per material: kind picks the palette, order picks the shade. */
-function materialColors(spec: FurnitureSpec): Map<string, string> {
+function materialColors(materials: Material[]): Map<string, string> {
   const colors = new Map<string, string>();
   let sheetIdx = 0;
   let solidIdx = 0;
-  for (const m of spec.materials) {
+  for (const m of materials) {
     if (m.kind === "sheet") {
       colors.set(m.id, SHEET_PALETTE[sheetIdx++ % SHEET_PALETTE.length]);
     } else if (m.kind === "solid") {
@@ -50,11 +50,21 @@ function materialColors(spec: FurnitureSpec): Map<string, string> {
 
 const FALLBACK_COLOR = "#cccccc";
 
-export function buildRenderModel(spec: FurnitureSpec): RenderModel {
-  const colors = materialColors(spec);
-  const offset: [number, number, number] = [-spec.bbox.w / 2, 0, -spec.bbox.d / 2];
+/**
+ * Core conversion shared by the full-spec and streaming-partial builders.
+ * Only needs bbox (for centering), materials (for color), and the parts so far,
+ * so it renders identically whether it sees a complete spec or a spec that is
+ * still assembling part-by-part over the stream.
+ */
+function renderFromParts(
+  bbox: Size3,
+  materials: Material[],
+  parts: Part[]
+): RenderModel {
+  const colors = materialColors(materials);
+  const offset: [number, number, number] = [-bbox.w / 2, 0, -bbox.d / 2];
 
-  const parts: RenderPart[] = spec.parts.map((p) => ({
+  const renderParts: RenderPart[] = parts.map((p) => ({
     id: p.id,
     name: p.name,
     materialId: p.materialId,
@@ -67,5 +77,23 @@ export function buildRenderModel(spec: FurnitureSpec): RenderModel {
     color: colors.get(p.materialId) ?? FALLBACK_COLOR,
   }));
 
-  return { parts, bbox: { ...spec.bbox }, offset };
+  return { parts: renderParts, bbox: { ...bbox }, offset };
+}
+
+export function buildRenderModel(spec: FurnitureSpec): RenderModel {
+  return renderFromParts(spec.bbox, spec.materials, spec.parts);
+}
+
+/**
+ * Render data for a spec that is still streaming in. `bbox` and `materials`
+ * arrive first (the "meta" event); `parts` grows as each part closes. Produces
+ * exactly what buildRenderModel would for the same parts, so the progressive
+ * preview and the final committed model line up with no visual jump.
+ */
+export function buildPartialRenderModel(pending: {
+  bbox: Size3;
+  materials: Material[];
+  parts: Part[];
+}): RenderModel {
+  return renderFromParts(pending.bbox, pending.materials, pending.parts);
 }

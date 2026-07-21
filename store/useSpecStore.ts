@@ -2,15 +2,40 @@
 
 import { create } from "zustand";
 import { temporal } from "zundo";
-import type { FurnitureSpec, Size3, Vec3 } from "@/lib/spec/schema";
+import type {
+  FurnitureSpec,
+  Material,
+  Part,
+  Size3,
+  Vec3,
+} from "@/lib/spec/schema";
 import { bookshelfSpec } from "@/lib/spec/examples";
 
 export type EditorStatus = "idle" | "generating";
+
+/** Honest, ordered stages of a generation, surfaced in the wait UI. */
+export type GenStage =
+  | "understanding"
+  | "dimensions"
+  | "parts"
+  | "validating"
+  | "rendering";
+
+/** A spec that is still streaming in, assembled part-by-part in the viewport. */
+export interface PendingSpec {
+  name: string;
+  bbox: Size3;
+  materials: Material[];
+  parts: Part[];
+}
 
 interface SpecState {
   spec: FurnitureSpec;
   selectedPartId: string | null;
   status: EditorStatus;
+  stage: GenStage;
+  /** streamed-in-progress spec, or null when not streaming a preview */
+  pending: PendingSpec | null;
   error: string | null;
   /** scale-figure position [x, z] in scene mm; null = default beside the model */
   scaleFigurePos: [number, number] | null;
@@ -24,6 +49,17 @@ interface SpecState {
   setStatus: (status: EditorStatus) => void;
   setError: (error: string | null) => void;
   setScaleFigurePos: (pos: [number, number]) => void;
+  // --- generation / streaming lifecycle ---
+  beginGenerating: () => void;
+  setStage: (stage: GenStage) => void;
+  /** bbox + materials arrived: seed the empty pending assembly */
+  setPendingMeta: (meta: Omit<PendingSpec, "parts">) => void;
+  /** one newly-closed part arrived over the stream */
+  addPendingPart: (part: Part) => void;
+  /** clear the streamed preview (on done, cancel, error, or before a retry) */
+  clearPending: () => void;
+  /** cancel/abort: back to idle, keep prompt + last committed spec */
+  endGenerating: () => void;
 }
 
 export const useSpecStore = create<SpecState>()(
@@ -32,6 +68,8 @@ export const useSpecStore = create<SpecState>()(
       spec: bookshelfSpec,
       selectedPartId: null,
       status: "idle",
+      stage: "understanding",
+      pending: null,
       error: null,
       scaleFigurePos: null,
 
@@ -84,6 +122,25 @@ export const useSpecStore = create<SpecState>()(
       setStatus: (status) => set({ status }),
       setError: (error) => set({ error }),
       setScaleFigurePos: (pos) => set({ scaleFigurePos: pos }),
+
+      beginGenerating: () =>
+        set({
+          status: "generating",
+          stage: "understanding",
+          pending: null,
+          error: null,
+        }),
+      setStage: (stage) => set({ stage }),
+      setPendingMeta: (meta) =>
+        set({ pending: { ...meta, parts: [] }, stage: "parts" }),
+      addPendingPart: (part) =>
+        set((state) =>
+          state.pending
+            ? { pending: { ...state.pending, parts: [...state.pending.parts, part] } }
+            : {}
+        ),
+      clearPending: () => set({ pending: null }),
+      endGenerating: () => set({ status: "idle", pending: null }),
     }),
     {
       // Only the spec belongs in undo history — not selection or async status.

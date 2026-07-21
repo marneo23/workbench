@@ -2,15 +2,37 @@
 
 import { useMemo, useRef } from "react";
 import * as THREE from "three";
-import { Canvas, useThree, type ThreeEvent } from "@react-three/fiber";
-import { Grid, OrbitControls } from "@react-three/drei";
-import { buildRenderModel } from "@/lib/geometry/builder";
+import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Edges, Grid, OrbitControls } from "@react-three/drei";
+import { buildPartialRenderModel, buildRenderModel } from "@/lib/geometry/builder";
 import type { FurnitureSpec } from "@/lib/spec/schema";
 import { useSpecStore } from "@/store/useSpecStore";
 import { PartMesh } from "./PartMesh";
 import { ScaleFigure } from "./ScaleFigure";
 import { DimensionOverlay } from "./DimensionOverlay";
 import { ResizeGizmo } from "./ResizeGizmo";
+
+/**
+ * Translucent, gently-breathing bounding volume shown while a piece generates —
+ * a proportioned "ghost" the streamed parts fill in, so the wait reads as
+ * "assembling" rather than an empty or frozen scene.
+ */
+function GhostBox({ bbox }: { bbox: { w: number; h: number; d: number } }) {
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+  useFrame(() => {
+    if (matRef.current) {
+      const t = performance.now() / 1000;
+      matRef.current.opacity = 0.05 + 0.05 * (0.5 + 0.5 * Math.sin(t * 2.5));
+    }
+  });
+  return (
+    <mesh position={[0, bbox.h / 2, 0]}>
+      <boxGeometry args={[bbox.w, bbox.h, bbox.d]} />
+      <meshBasicMaterial ref={matRef} color="#0284c7" transparent opacity={0.08} />
+      <Edges color="#38bdf8" threshold={15} />
+    </mesh>
+  );
+}
 
 /**
  * Scale figure you grab and slide along the floor — no gizmo arrows. Press
@@ -87,7 +109,20 @@ export function Viewport({
   showScaleFigure,
   showDimensions,
 }: ViewportProps) {
-  const model = useMemo(() => buildRenderModel(spec), [spec]);
+  const status = useSpecStore((s) => s.status);
+  const pending = useSpecStore((s) => s.pending);
+  const generating = status === "generating";
+  // While streaming, render the part-by-part assembly; before the first parts
+  // land (or on a bare "generating"), dim the last committed model in place.
+  const streaming = generating && pending !== null;
+  const preMeta = generating && pending === null;
+
+  const committedModel = useMemo(() => buildRenderModel(spec), [spec]);
+  const pendingModel = useMemo(
+    () => (pending ? buildPartialRenderModel(pending) : null),
+    [pending]
+  );
+  const model = streaming && pendingModel ? pendingModel : committedModel;
 
   // Camera sized from the model: pulled back along the room diagonal.
   const diag = Math.hypot(model.bbox.w, model.bbox.h, model.bbox.d);
@@ -107,16 +142,20 @@ export function Viewport({
       <directionalLight position={[3000, 5000, 2000]} intensity={1.1} />
       <directionalLight position={[-2000, 2500, -3000]} intensity={0.35} />
 
+      {(streaming || preMeta) && <GhostBox bbox={model.bbox} />}
+
       {model.parts.map((part) => (
         <PartMesh
           key={part.id}
           part={part}
-          selected={part.id === selectedPartId}
-          onSelect={onSelectPart}
+          selected={!generating && part.id === selectedPartId}
+          onSelect={generating ? () => {} : onSelectPart}
+          reveal={streaming}
+          dim={preMeta}
         />
       ))}
 
-      {selectedPart && (
+      {!generating && selectedPart && (
         <ResizeGizmo part={selectedPart} offset={model.offset} handleSize={handleSize} />
       )}
 
