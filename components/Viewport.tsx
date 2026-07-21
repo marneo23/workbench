@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, type ReactNode } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Edges, Grid, OrbitControls } from "@react-three/drei";
@@ -32,6 +32,38 @@ function GhostBox({ bbox }: { bbox: { w: number; h: number; d: number } }) {
       <Edges color="#38bdf8" threshold={15} />
     </mesh>
   );
+}
+
+/**
+ * Peak-end flourish: when a generation finishes, the assembled piece eases up
+ * to full size — a short "snap together" that gives the wait a satisfying
+ * close (the moment users remember most).
+ */
+function SettleGroup({ children }: { children: ReactNode }) {
+  const status = useSpecStore((s) => s.status);
+  const ref = useRef<THREE.Group>(null);
+  const prev = useRef(status);
+  const start = useRef<number | null>(null);
+
+  useFrame(() => {
+    if (prev.current === "generating" && status === "idle") {
+      start.current = performance.now();
+    }
+    prev.current = status;
+
+    const g = ref.current;
+    if (!g) return;
+    if (start.current === null) {
+      g.scale.setScalar(1);
+      return;
+    }
+    const p = Math.min(1, (performance.now() - start.current) / 380);
+    const ease = 1 - Math.pow(1 - p, 3); // easeOutCubic
+    g.scale.setScalar(0.98 + 0.02 * ease);
+    if (p >= 1) start.current = null;
+  });
+
+  return <group ref={ref}>{children}</group>;
 }
 
 /**
@@ -144,16 +176,18 @@ export function Viewport({
 
       {(streaming || preMeta) && <GhostBox bbox={model.bbox} />}
 
-      {model.parts.map((part) => (
-        <PartMesh
-          key={part.id}
-          part={part}
-          selected={!generating && part.id === selectedPartId}
-          onSelect={generating ? () => {} : onSelectPart}
-          reveal={streaming}
-          dim={preMeta}
-        />
-      ))}
+      <SettleGroup>
+        {model.parts.map((part) => (
+          <PartMesh
+            key={part.id}
+            part={part}
+            selected={!generating && part.id === selectedPartId}
+            onSelect={generating ? () => {} : onSelectPart}
+            reveal={streaming}
+            dim={preMeta}
+          />
+        ))}
+      </SettleGroup>
 
       {!generating && selectedPart && (
         <ResizeGizmo part={selectedPart} offset={model.offset} handleSize={handleSize} />

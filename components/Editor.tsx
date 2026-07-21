@@ -5,6 +5,7 @@ import { Viewport } from "./Viewport";
 import { PartsPanel } from "./PartsPanel";
 import { ExportButton } from "./ExportButton";
 import { PromptBar } from "./PromptBar";
+import { BuildLog } from "./BuildLog";
 import { redoSpec, undoSpec, useSpecStore } from "@/store/useSpecStore";
 import { validateSpec } from "@/lib/spec/validate";
 
@@ -71,6 +72,8 @@ export function Editor() {
             Dimensions
           </label>
         </div>
+
+        <BuildLog />
 
         <div className="absolute bottom-4 right-4">
           <ExportButton />
