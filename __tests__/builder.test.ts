@@ -35,6 +35,15 @@ describe("buildRenderModel", () => {
   it("keeps one render part per spec part", () => {
     expect(model.parts.map((p) => p.id)).toEqual(bookshelfSpec.parts.map((p) => p.id));
   });
+
+  it("emits colors THREE.Color accepts", () => {
+    // THREE.Color has no alpha channel: an 8-digit "#rrggbbaa" is rejected with
+    // "Invalid hex color" and silently falls back to white. That is invisible
+    // in a diff and easy to miss on screen, so pin the format here.
+    for (const part of model.parts) {
+      expect(part.color, `${part.id} color`).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
 });
 
 describe("buildPartialRenderModel (streaming preview)", () => {

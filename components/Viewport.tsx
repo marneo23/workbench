@@ -11,7 +11,8 @@ import { PartMesh } from "./PartMesh";
 import { ScaleFigure } from "./ScaleFigure";
 import { DimensionOverlay } from "./DimensionOverlay";
 import { ResizeGizmo } from "./ResizeGizmo";
-import { CameraRig, framingFor } from "./CameraRig";
+import { CameraRig } from "./CameraRig";
+import { CAMERA_FOV, framingFor } from "@/lib/geometry/framing";
 
 /**
  * Translucent, gently-breathing bounding volume shown while a piece generates —
@@ -171,7 +172,7 @@ export function Viewport({
 
   return (
     <Canvas
-      camera={{ position: camPos, fov: 40, near, far }}
+      camera={{ position: camPos, fov: CAMERA_FOV, near, far }}
       onPointerMissed={() => onSelectPart(null)}
       className="h-full w-full"
     >
