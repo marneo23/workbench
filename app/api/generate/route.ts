@@ -21,6 +21,7 @@ import {
   buildRetryMessage,
   buildUserMessage,
 } from "@/lib/llm/prompts";
+import { mockAllowed, runMockStream } from "@/lib/llm/mock";
 
 export const maxDuration = 300;
 
@@ -29,6 +30,9 @@ const RequestSchema = z.object({
   currentSpec: FurnitureSpecSchema.optional(),
   /** false → blocking JSON fallback; default follows DISABLE_STREAMING env. */
   stream: z.boolean().optional(),
+  /** debug: replay the reference spec locally, no LLM call and no cost */
+  mock: z.boolean().optional(),
+  mockScenario: z.enum(["success", "slow", "retry", "error"]).optional(),
 });
 
 const MODEL = process.env.OPENAI_MODEL ?? "gpt-5.1";
@@ -92,6 +96,7 @@ function buildRetryTurns(
 // NDJSON event protocol (one JSON object per line):
 //   { type: "meta",  name, bbox, materials }   — dims + materials known
 //   { type: "part",  part }                     — one newly-closed part
+//   { type: "stage", stage }                    — server-side stage change
 //   { type: "reset" }                           — clear preview before a retry
 //   { type: "done",  spec, warnings }           — final validated spec
 //   { type: "error", status, error, details? }  — terminal failure
@@ -182,6 +187,7 @@ function runStream(
             emitted++;
           }
 
+          send({ type: "stage", stage: "validating" });
           const { errors, warnings } = validateSpec(obj);
           if (errors.length === 0) {
             finalSpec = obj;
@@ -266,19 +272,34 @@ async function generateBlocking(
   );
 }
 
+const NDJSON_HEADERS = {
+  "Content-Type": "application/x-ndjson; charset=utf-8",
+  "Cache-Control": "no-store, no-transform",
+  "X-Accel-Buffering": "no",
+};
+
 export async function POST(request: Request) {
+  const body = RequestSchema.safeParse(await request.json().catch(() => null));
+  if (!body.success) {
+    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+  }
+  const { prompt, currentSpec, stream, mock, mockScenario } = body.data;
+
+  // Debug mode short-circuits everything above the protocol: no API key needed,
+  // no tokens spent. Ignored in production unless explicitly allowed.
+  if (mock && mockAllowed()) {
+    return new Response(
+      runMockStream(request.signal, { scenario: mockScenario }),
+      { headers: NDJSON_HEADERS }
+    );
+  }
+
   if (!process.env.OPENAI_API_KEY) {
     return NextResponse.json(
       { error: "Server is missing OPENAI_API_KEY." },
       { status: 500 }
     );
   }
-
-  const body = RequestSchema.safeParse(await request.json().catch(() => null));
-  if (!body.success) {
-    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
-  }
-  const { prompt, currentSpec, stream } = body.data;
 
   const messages: ModelMessage[] = [
     { role: "user", content: buildUserMessage(prompt, currentSpec) },
@@ -288,11 +309,5 @@ export async function POST(request: Request) {
     return generateBlocking(request, messages);
   }
 
-  return new Response(runStream(request, messages), {
-    headers: {
-      "Content-Type": "application/x-ndjson; charset=utf-8",
-      "Cache-Control": "no-store, no-transform",
-      "X-Accel-Buffering": "no",
-    },
-  });
+  return new Response(runStream(request, messages), { headers: NDJSON_HEADERS });
 }

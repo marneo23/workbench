@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { useSpecStore } from "@/store/useSpecStore";
+import { useRef, useState, useSyncExternalStore } from "react";
+import { useSpecStore, type GenStage } from "@/store/useSpecStore";
 import { bookshelfSpec } from "@/lib/spec/examples";
 import {
   FurnitureSpecSchema,
@@ -9,6 +9,28 @@ import {
   type FurnitureSpec,
 } from "@/lib/spec/schema";
 import { GenerationHUD } from "./GenerationHUD";
+import type { MockScenario } from "@/lib/llm/mock";
+
+/** Debug controls are compiled out of production builds. */
+const DEBUG_UI = process.env.NODE_ENV === "development";
+const MOCK_KEY = "workbench:mock";
+const SCENARIOS: MockScenario[] = ["success", "slow", "retry", "error"];
+
+// The mock toggle lives in localStorage (it should survive the reloads you do
+// while tuning the wait UI), read through useSyncExternalStore so hydration
+// starts from the server's "off" and settles without a mismatch.
+const mockSubscribers = new Set<() => void>();
+const subscribeMock = (cb: () => void) => {
+  mockSubscribers.add(cb);
+  return () => void mockSubscribers.delete(cb);
+};
+const getMockSnapshot = () => window.localStorage.getItem(MOCK_KEY);
+const getMockServerSnapshot = () => null;
+function writeMock(value: MockScenario | null) {
+  if (value) window.localStorage.setItem(MOCK_KEY, value);
+  else window.localStorage.removeItem(MOCK_KEY);
+  for (const cb of mockSubscribers) cb();
+}
 
 /**
  * Natural-language prompt input. First prompt generates a fresh design; once
@@ -42,6 +64,19 @@ export function PromptBar() {
   // Untouched example → new design; anything else → refinement.
   const pristine = spec === bookshelfSpec;
 
+  // Debug mode: replay the reference spec over the same stream, no LLM, no cost.
+  const storedMock = useSyncExternalStore(
+    subscribeMock,
+    getMockSnapshot,
+    getMockServerSnapshot
+  );
+  const mock = DEBUG_UI && storedMock !== null;
+  const mockScenario: MockScenario = SCENARIOS.includes(storedMock as MockScenario)
+    ? (storedMock as MockScenario)
+    : "success";
+  const setMockMode = (on: boolean, scenario: MockScenario) =>
+    writeMock(on ? scenario : null);
+
   const commit = (raw: unknown) => {
     const parsed = FurnitureSpecSchema.safeParse(raw);
     if (!parsed.success) {
@@ -70,6 +105,9 @@ export function PromptBar() {
         if (p.success) addPendingPart(p.data);
         break;
       }
+      case "stage":
+        if (typeof ev.stage === "string") setStage(ev.stage as GenStage);
+        break;
       case "reset":
         clearPending();
         setStage("dimensions");
@@ -142,6 +180,7 @@ export function PromptBar() {
         body: JSON.stringify({
           prompt: promptText,
           ...(currentSpec ? { currentSpec } : {}),
+          ...(mock ? { mock: true, mockScenario } : {}),
         }),
         signal: controller.signal,
       });
@@ -168,9 +207,11 @@ export function PromptBar() {
   };
 
   const submit = () => {
-    const trimmed = prompt.trim();
-    if (!trimmed || generating) return;
-    run(trimmed, pristine ? undefined : spec);
+    if (generating) return;
+    // In mock mode the prompt is ignored, so an empty box still runs.
+    const trimmed = prompt.trim() || (mock ? "mock run" : "");
+    if (!trimmed) return;
+    run(trimmed, pristine || mock ? undefined : spec);
   };
 
   const cancel = () => {
@@ -197,6 +238,33 @@ export function PromptBar() {
               Retry
             </button>
           )}
+        </div>
+      )}
+
+      {DEBUG_UI && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg bg-slate-900/85 px-2.5 py-1.5 text-[11px] text-slate-300 shadow backdrop-blur">
+          <label className="flex cursor-pointer items-center gap-1.5 font-semibold">
+            <input
+              type="checkbox"
+              checked={mock}
+              onChange={(e) => setMockMode(e.target.checked, mockScenario)}
+              className="accent-amber-400"
+            />
+            Mock mode
+          </label>
+          <span className="text-slate-500">no LLM · $0</span>
+          <select
+            value={mockScenario}
+            onChange={(e) => setMockMode(true, e.target.value as MockScenario)}
+            disabled={!mock}
+            className="ml-auto rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-200 outline-none disabled:opacity-40"
+          >
+            {SCENARIOS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
         </div>
       )}
 
@@ -227,10 +295,10 @@ export function PromptBar() {
         ) : (
           <button
             onClick={submit}
-            disabled={!prompt.trim()}
+            disabled={!prompt.trim() && !mock}
             className="rounded-lg bg-sky-600 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-sky-500 disabled:opacity-40"
           >
-            {pristine ? "Generate" : "Refine"}
+            {mock ? "Replay" : pristine ? "Generate" : "Refine"}
           </button>
         )}
       </div>

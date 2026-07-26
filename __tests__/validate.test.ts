@@ -3,8 +3,9 @@ import { FurnitureSpecSchema, type FurnitureSpec } from "@/lib/spec/schema";
 import { validateSpec } from "@/lib/spec/validate";
 import { bookshelfSpec } from "@/lib/spec/examples";
 
-function clone(spec: FurnitureSpec): FurnitureSpec {
-  return structuredClone(spec);
+// Generic: tests clone whole specs and individual parts off them.
+function clone<T>(value: T): T {
+  return structuredClone(value);
 }
 
 describe("bookshelf example", () => {
