@@ -204,7 +204,16 @@ export function Viewport({
       {showDimensions && <DimensionOverlay bbox={model.bbox} />}
 
       {/* Finite grid, everything scaled to the model: an infinite grid with a
-          fixed huge fade range shimmers/crawls badly at mm scale. */}
+          fixed huge fade range shimmers/crawls badly at mm scale.
+
+          fadeFrom={0} measures the fade from the world origin — i.e. from the
+          piece — instead of drei's default, which measures it from the camera's
+          projection onto the floor. That default makes grid visibility depend
+          on camera pitch: lowering the camera to eye level pushes its ground
+          projection away from the model and fades the floor under the piece to
+          ~17% opacity, while a top-down view brings it back. Fading from the
+          piece is angle-invariant, and since the fade distance equals the
+          grid's half-extent the plane reaches zero exactly at its own edge. */}
       <Grid
         position={[0, -2, 0]}
         args={[diag * 6, diag * 6]}
@@ -214,8 +223,9 @@ export function Viewport({
         sectionSize={1000}
         sectionThickness={1}
         sectionColor="#94a3b8"
+        fadeFrom={0}
         fadeDistance={diag * 3}
-        fadeStrength={2.5}
+        fadeStrength={1.5}
       />
       <OrbitControls
         makeDefault
