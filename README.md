@@ -34,3 +34,27 @@ Open [http://localhost:3000](http://localhost:3000). Without an API key everythi
 npm test        # vitest suite over the pure lib/** pipeline
 npm run build   # production build
 ```
+
+## Mock mode
+
+Generation takes 30–90s and costs money every time, which makes the wait
+experience expensive to iterate on and its failure paths awkward to reproduce.
+Mock mode replays the reference bookshelf over the real NDJSON protocol with
+plausible pacing — same events, same client code, no LLM, no tokens.
+
+In `npm run dev`, tick **Mock mode** above the prompt bar and pick a scenario;
+the button becomes **Replay** and the prompt is ignored. The choice is kept in
+`localStorage` so it survives reloads.
+
+| Scenario  | What it replays |
+|-----------|-----------------|
+| `success` | A clean run, part by part. |
+| `slow`    | The same run at 3× the duration — the 90s end of the range. |
+| `retry`   | A partial first pass, then a validation-feedback retry from scratch. |
+| `error`   | Parts stream, then validation fails — like the real 422, which only fails after two passes. Exercises the partial-assembly rescue. |
+
+The controls are compiled out of production builds, and the server refuses
+`{ mock: true }` outside development unless `ALLOW_MOCK_LLM=1`.
+
+**Replay `success` and `error` before calling a viewport change done** — see
+`AGENTS.md` for the rest of that checklist.
