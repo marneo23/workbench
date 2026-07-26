@@ -36,6 +36,13 @@ interface SpecState {
   stage: GenStage;
   /** streamed-in-progress spec, or null when not streaming a preview */
   pending: PendingSpec | null;
+  /**
+   * Partial assembly rescued from a failed generation, awaiting keep-or-discard.
+   * Failing after a 30–90s wait and dropping the user back to the previous
+   * model throws away real work and is the documented way to lose them for
+   * good; whatever was built stays on screen until they decide.
+   */
+  salvage: PendingSpec | null;
   error: string | null;
   /** scale-figure position [x, z] in scene mm; null = default beside the model */
   scaleFigurePos: [number, number] | null;
@@ -60,6 +67,12 @@ interface SpecState {
   clearPending: () => void;
   /** cancel/abort: back to idle, keep prompt + last committed spec */
   endGenerating: () => void;
+  /** failure: back to idle, but rescue whatever had already assembled */
+  failGenerating: (error: string) => void;
+  /** adopt the rescued partial as the current spec, editable as normal */
+  keepSalvage: () => void;
+  /** throw the rescued partial away and return to the last committed spec */
+  discardSalvage: () => void;
 }
 
 export const useSpecStore = create<SpecState>()(
@@ -70,6 +83,7 @@ export const useSpecStore = create<SpecState>()(
       status: "idle",
       stage: "understanding",
       pending: null,
+      salvage: null,
       error: null,
       scaleFigurePos: null,
 
@@ -80,6 +94,7 @@ export const useSpecStore = create<SpecState>()(
             ? state.selectedPartId
             : null,
           error: null,
+          salvage: null,
           // New piece: send the scale figure back to its default spot beside it.
           scaleFigurePos: null,
         })),
@@ -128,6 +143,7 @@ export const useSpecStore = create<SpecState>()(
           status: "generating",
           stage: "understanding",
           pending: null,
+          salvage: null, // a fresh attempt supersedes the last rescued partial
           error: null,
         }),
       setStage: (stage) => set({ stage }),
@@ -141,6 +157,41 @@ export const useSpecStore = create<SpecState>()(
         ),
       clearPending: () => set({ pending: null }),
       endGenerating: () => set({ status: "idle", pending: null }),
+
+      failGenerating: (error) =>
+        set((state) => ({
+          status: "idle",
+          error,
+          // An empty assembly is nothing to offer — only rescue real parts.
+          salvage: state.pending?.parts.length ? state.pending : null,
+          pending: null,
+        })),
+
+      keepSalvage: () =>
+        set((state) => {
+          const s = state.salvage;
+          if (!s) return {};
+          // The rescue may not pass cross-field validation — that is usually
+          // why it failed. It is still editable, and the warnings panel says
+          // what is wrong, which beats losing the work.
+          const spec: FurnitureSpec = {
+            version: 1,
+            name: s.name,
+            units: "mm",
+            bbox: s.bbox,
+            materials: s.materials,
+            parts: s.parts,
+          };
+          return {
+            spec,
+            salvage: null,
+            error: null,
+            selectedPartId: null,
+            scaleFigurePos: null,
+          };
+        }),
+
+      discardSalvage: () => set({ salvage: null, error: null }),
     }),
     {
       // Only the spec belongs in undo history — not selection or async status.

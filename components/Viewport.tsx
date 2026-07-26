@@ -11,6 +11,7 @@ import { PartMesh } from "./PartMesh";
 import { ScaleFigure } from "./ScaleFigure";
 import { DimensionOverlay } from "./DimensionOverlay";
 import { ResizeGizmo } from "./ResizeGizmo";
+import { CameraRig, framingFor } from "./CameraRig";
 
 /**
  * Translucent, gently-breathing bounding volume shown while a piece generates —
@@ -143,29 +144,34 @@ export function Viewport({
 }: ViewportProps) {
   const status = useSpecStore((s) => s.status);
   const pending = useSpecStore((s) => s.pending);
+  const salvage = useSpecStore((s) => s.salvage);
   const generating = status === "generating";
   // While streaming, render the part-by-part assembly; before the first parts
   // land (or on a bare "generating"), dim the last committed model in place.
   const streaming = generating && pending !== null;
   const preMeta = generating && pending === null;
+  // A failed generation leaves its partial assembly on screen, ghosted, so the
+  // keep-or-discard choice in the prompt bar is about something visible.
+  const showingSalvage = !generating && salvage !== null;
 
   const committedModel = useMemo(() => buildRenderModel(spec), [spec]);
-  const pendingModel = useMemo(
-    () => (pending ? buildPartialRenderModel(pending) : null),
-    [pending]
+  const partial = pending ?? salvage;
+  const partialModel = useMemo(
+    () => (partial ? buildPartialRenderModel(partial) : null),
+    [partial]
   );
-  const model = streaming && pendingModel ? pendingModel : committedModel;
+  const model =
+    (streaming || showingSalvage) && partialModel ? partialModel : committedModel;
 
-  // Camera sized from the model: pulled back along the room diagonal.
-  const diag = Math.hypot(model.bbox.w, model.bbox.h, model.bbox.d);
-  const camPos: [number, number, number] = [diag * 1.1, diag * 0.75, diag * 1.1];
-  const target: [number, number, number] = [0, model.bbox.h / 2, 0];
+  // Camera sized from the model: pulled back along the room diagonal. This is
+  // the opening framing only — CameraRig owns the camera from mount onward.
+  const { diag, position: camPos, near, far } = framingFor(model.bbox);
   const handleSize = Math.min(Math.max(diag * 0.04, 15), 90);
   const selectedPart = spec.parts.find((p) => p.id === selectedPartId);
 
   return (
     <Canvas
-      camera={{ position: camPos, fov: 40, near: diag * 0.02, far: diag * 12 }}
+      camera={{ position: camPos, fov: 40, near, far }}
       onPointerMissed={() => onSelectPart(null)}
       className="h-full w-full"
     >
@@ -174,22 +180,22 @@ export function Viewport({
       <directionalLight position={[3000, 5000, 2000]} intensity={1.1} />
       <directionalLight position={[-2000, 2500, -3000]} intensity={0.35} />
 
-      {(streaming || preMeta) && <GhostBox bbox={model.bbox} />}
+      {(streaming || preMeta || showingSalvage) && <GhostBox bbox={model.bbox} />}
 
       <SettleGroup>
         {model.parts.map((part) => (
           <PartMesh
             key={part.id}
             part={part}
-            selected={!generating && part.id === selectedPartId}
-            onSelect={generating ? () => {} : onSelectPart}
+            selected={!generating && !showingSalvage && part.id === selectedPartId}
+            onSelect={generating || showingSalvage ? () => {} : onSelectPart}
             reveal={streaming}
-            dim={preMeta}
+            ghost={preMeta ? "pulsing" : showingSalvage ? "static" : undefined}
           />
         ))}
       </SettleGroup>
 
-      {!generating && selectedPart && (
+      {!generating && !showingSalvage && selectedPart && (
         <ResizeGizmo part={selectedPart} offset={model.offset} handleSize={handleSize} />
       )}
 
@@ -212,11 +218,11 @@ export function Viewport({
       />
       <OrbitControls
         makeDefault
-        target={target}
         maxPolarAngle={Math.PI / 2 - 0.02}
         minDistance={diag * 0.3}
         maxDistance={diag * 4}
       />
+      <CameraRig bbox={model.bbox} />
     </Canvas>
   );
 }

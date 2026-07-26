@@ -44,8 +44,8 @@ export function PromptBar() {
   const spec = useSpecStore((s) => s.spec);
   const status = useSpecStore((s) => s.status);
   const error = useSpecStore((s) => s.error);
+  const salvage = useSpecStore((s) => s.salvage);
   const setSpec = useSpecStore((s) => s.setSpec);
-  const setError = useSpecStore((s) => s.setError);
   const setStatus = useSpecStore((s) => s.setStatus);
   const setStage = useSpecStore((s) => s.setStage);
   const beginGenerating = useSpecStore((s) => s.beginGenerating);
@@ -53,6 +53,9 @@ export function PromptBar() {
   const addPendingPart = useSpecStore((s) => s.addPendingPart);
   const clearPending = useSpecStore((s) => s.clearPending);
   const endGenerating = useSpecStore((s) => s.endGenerating);
+  const failGenerating = useSpecStore((s) => s.failGenerating);
+  const keepSalvage = useSpecStore((s) => s.keepSalvage);
+  const discardSalvage = useSpecStore((s) => s.discardSalvage);
 
   const [prompt, setPrompt] = useState("");
   const abortRef = useRef<AbortController | null>(null);
@@ -63,6 +66,7 @@ export function PromptBar() {
   const generating = status === "generating";
   // Untouched example → new design; anything else → refinement.
   const pristine = spec === bookshelfSpec;
+  const salvageCount = salvage?.parts.length ?? 0;
 
   // Debug mode: replay the reference spec over the same stream, no LLM, no cost.
   const storedMock = useSyncExternalStore(
@@ -80,8 +84,7 @@ export function PromptBar() {
   const commit = (raw: unknown) => {
     const parsed = FurnitureSpecSchema.safeParse(raw);
     if (!parsed.success) {
-      setError("Server returned an invalid spec.");
-      endGenerating();
+      failGenerating("Server returned an invalid spec.");
       return;
     }
     setStage("rendering");
@@ -119,12 +122,8 @@ export function PromptBar() {
         const details = Array.isArray(ev.details)
           ? (ev.details as string[]).slice(0, 3).join("; ")
           : "";
-        setError(
-          details
-            ? `${String(ev.error ?? "Generation failed.")} (${details})`
-            : String(ev.error ?? "Generation failed.")
-        );
-        endGenerating();
+        const message = String(ev.error ?? "Generation failed.");
+        failGenerating(details ? `${message} (${details})` : message);
         break;
       }
     }
@@ -155,8 +154,11 @@ export function PromptBar() {
     }
     pump(buf);
     // If the stream ended without a terminal done/error (e.g. the connection
-    // dropped), don't leave the UI stuck in "generating".
-    if (useSpecStore.getState().status === "generating") endGenerating();
+    // dropped), don't leave the UI stuck in "generating" — and treat it as a
+    // failure so any parts already assembled are rescued rather than dropped.
+    if (useSpecStore.getState().status === "generating") {
+      failGenerating("The connection dropped before the design finished.");
+    }
   };
 
   const run = async (promptText: string, currentSpec?: FurnitureSpec) => {
@@ -192,15 +194,11 @@ export function PromptBar() {
         // Blocking fallback (or an early error) returns plain JSON.
         const data = await res.json().catch(() => null);
         if (data?.spec) commit(data.spec);
-        else {
-          setError(data?.error ?? `Generation failed (${res.status}).`);
-          endGenerating();
-        }
+        else failGenerating(data?.error ?? `Generation failed (${res.status}).`);
       }
     } catch {
       if (controller.signal.aborted) return; // user cancelled — already idle
-      setError("Network error — is the dev server running?");
-      endGenerating();
+      failGenerating("Network error — is the dev server running?");
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
@@ -228,15 +226,40 @@ export function PromptBar() {
   return (
     <div className="absolute bottom-4 left-1/2 w-full max-w-xl -translate-x-1/2 px-4">
       {error && (
-        <div className="mb-2 flex items-start justify-between gap-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 shadow">
-          <span>{error}</span>
-          {lastAttempt.current && (
-            <button
-              onClick={retry}
-              className="shrink-0 font-semibold text-red-800 underline underline-offset-2 hover:text-red-900"
-            >
-              Retry
-            </button>
+        <div className="mb-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 shadow">
+          <div className="flex items-start justify-between gap-3">
+            <span>{error}</span>
+            {lastAttempt.current && (
+              <button
+                onClick={retry}
+                className="shrink-0 font-semibold text-red-800 underline underline-offset-2 hover:text-red-900"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+
+          {/* The wait already cost the user 30–90s. Whatever assembled before
+              the failure is on screen, ghosted, and theirs to keep. */}
+          {salvageCount > 0 && (
+            <div className="mt-1.5 flex items-center gap-3 border-t border-red-200 pt-1.5">
+              <span className="text-red-600">
+                {salvageCount} part{salvageCount > 1 ? "s" : ""} were built before it
+                failed.
+              </span>
+              <button
+                onClick={keepSalvage}
+                className="ml-auto shrink-0 rounded bg-red-700 px-2 py-0.5 font-semibold text-white hover:bg-red-800"
+              >
+                Keep them
+              </button>
+              <button
+                onClick={discardSalvage}
+                className="shrink-0 text-red-600 underline underline-offset-2 hover:text-red-800"
+              >
+                Discard
+              </button>
+            </div>
           )}
         </div>
       )}

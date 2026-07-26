@@ -82,7 +82,20 @@ export function runMockStream(
       try {
         if (!(await wait(thinkMs))) return;
 
+        send({
+          type: "meta",
+          name: spec.name,
+          bbox: spec.bbox,
+          materials: spec.materials,
+        });
+
         if (scenario === "error") {
+          // Mirrors the real 422: parts have already streamed by the time the
+          // second validation pass fails, so this exercises the salvage path
+          // (a failure with nothing on screen is just the no-API-key case).
+          if (!(await streamParts(Math.ceil(spec.parts.length * 0.6)))) return;
+          send({ type: "stage", stage: "validating" });
+          if (!(await wait(validateMs))) return;
           send({
             type: "error",
             status: 422,
@@ -92,13 +105,6 @@ export function runMockStream(
           });
           return;
         }
-
-        send({
-          type: "meta",
-          name: spec.name,
-          bbox: spec.bbox,
-          materials: spec.materials,
-        });
 
         if (scenario === "retry") {
           // Partial first pass, then a validation-feedback retry from scratch.
