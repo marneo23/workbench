@@ -219,13 +219,13 @@ export function Viewport({
         args={[diag * 6, diag * 6]}
         cellSize={100}
         cellThickness={0.6}
-        cellColor="#cbd5e1"
+        cellColor="#94a3b8"
         sectionSize={1000}
         sectionThickness={1}
-        sectionColor="#94a3b8"
+        sectionColor="#64748b"
         fadeFrom={0}
         fadeDistance={diag * 3}
-        fadeStrength={1.5}
+        fadeStrength={1.2}
       />
       <OrbitControls
         makeDefault
