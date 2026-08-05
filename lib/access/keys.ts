@@ -15,6 +15,15 @@ type ParsedAccessKeys =
 
 const BEARER_KEY = /^[A-Za-z0-9\-._~+/]+=*$/;
 
+export function validBearerKey(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 16 &&
+    value.length <= 256 &&
+    BEARER_KEY.test(value)
+  );
+}
+
 function parseAccessKeys(raw: string | undefined): ParsedAccessKeys {
   if (raw == null || raw.trim() === "") return { status: "disabled" };
 
@@ -33,13 +42,7 @@ function parseAccessKeys(raw: string | undefined): ParsedAccessKeys {
       if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(userId)) {
         return { status: "invalid" };
       }
-      if (
-        typeof key !== "string" ||
-        key.length < 16 ||
-        key.length > 256 ||
-        !BEARER_KEY.test(key) ||
-        seen.has(key)
-      ) {
+      if (!validBearerKey(key) || seen.has(key)) {
         return { status: "invalid" };
       }
       seen.add(key);
@@ -53,7 +56,7 @@ function parseAccessKeys(raw: string | undefined): ParsedAccessKeys {
 }
 
 /** Compares secrets without returning early on a matching prefix. */
-function secretsEqual(left: string, right: string): boolean {
+export function secretsEqual(left: string, right: string): boolean {
   const length = Math.max(left.length, right.length);
   let difference = left.length ^ right.length;
   for (let i = 0; i < length; i++) {
