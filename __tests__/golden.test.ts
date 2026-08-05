@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { GOLDEN_CASES, scoreRuns, type CaseRun, type Check } from "@/lib/golden/cases";
+import {
+  GOLDEN_CASES,
+  goldenRunKey,
+  orderGoldenCases,
+  parentSpecFor,
+  scoreRuns,
+  type CaseRun,
+  type Check,
+} from "@/lib/golden/cases";
 import { bookshelfSpec } from "@/lib/spec/examples";
 import type { FurnitureSpec, Part } from "@/lib/spec/schema";
 
@@ -41,6 +49,92 @@ function withExtraShelf(): FurnitureSpec {
     position: { x: 18, y: 1600, z: 0 },
   };
   return { ...bookshelfSpec, parts: [...bookshelfSpec.parts, shelf] };
+}
+
+function withoutBack(): FurnitureSpec {
+  return {
+    ...bookshelfSpec,
+    materials: bookshelfSpec.materials.filter((m) => m.id !== "back-6"),
+    parts: bookshelfSpec.parts.filter((p) => p.id !== "back"),
+  };
+}
+
+function withGenericPlywoodAndExtraShelf(): FurnitureSpec {
+  const source = withExtraShelf();
+  return {
+    ...source,
+    materials: source.materials.map((m) =>
+      m.id === "ply-18" ? { ...m, name: "18mm plywood" } : m
+    ),
+  };
+}
+
+function inBirch(): FurnitureSpec {
+  const source = withGenericPlywoodAndExtraShelf();
+  return {
+    ...source,
+    materials: source.materials.map((m) =>
+      m.id === "ply-18" ? { ...m, name: "18mm birch plywood" } : m
+    ),
+  };
+}
+
+function tenModuleFixture(): FurnitureSpec {
+  const parts = Array.from({ length: 10 }, (_, i): Part[] => {
+    const moduleNumber = i + 1;
+    const x = (i % 5) * 500;
+    const y = Math.floor(i / 5) * 500;
+    return [
+      {
+        id: `module-${moduleNumber}-side-left`,
+        name: `Module ${moduleNumber} left side`,
+        shape: "box",
+        size: { w: 18, h: 500, d: 400 },
+        position: { x, y, z: 0 },
+        materialId: "ply-18",
+      },
+      {
+        id: `module-${moduleNumber}-side-right`,
+        name: `Module ${moduleNumber} right side`,
+        shape: "box",
+        size: { w: 18, h: 500, d: 400 },
+        position: { x: x + 482, y, z: 0 },
+        materialId: "ply-18",
+      },
+      {
+        id: `module-${moduleNumber}-top`,
+        name: `Module ${moduleNumber} top`,
+        shape: "box",
+        size: { w: 464, h: 18, d: 400 },
+        position: { x: x + 18, y: y + 482, z: 0 },
+        materialId: "ply-18",
+      },
+      {
+        id: `module-${moduleNumber}-bottom`,
+        name: `Module ${moduleNumber} bottom`,
+        shape: "box",
+        size: { w: 464, h: 18, d: 400 },
+        position: { x: x + 18, y, z: 0 },
+        materialId: "ply-18",
+      },
+      {
+        id: `module-${moduleNumber}-back`,
+        name: `Module ${moduleNumber} back`,
+        shape: "box",
+        size: { w: 464, h: 464, d: 18 },
+        position: { x: x + 18, y: y + 18, z: 382 },
+        materialId: "ply-18",
+      },
+    ];
+  }).flat();
+  return {
+    version: 1,
+    name: "Ten-module storage wall",
+    units: "mm",
+    bbox: { w: 2500, h: 1000, d: 400 },
+    materials: [{ id: "ply-18", name: "18mm plywood", kind: "sheet", thickness: 18 }],
+    parts,
+  };
 }
 
 describe("bookshelf case", () => {
@@ -122,10 +216,144 @@ describe("refinement cases", () => {
       "exactly one part added"
     );
   });
+
+  it("accepts removing only the requested back panel", () => {
+    expect(failed(caseById("bookshelf-remove-back").check(withoutBack(), bookshelfSpec))).toEqual(
+      []
+    );
+  });
+
+  it("rejects a removal that also renames an untouched part", () => {
+    const wrong = withoutBack();
+    wrong.parts = wrong.parts.map((p, i) => (i === 0 ? { ...p, id: `${p.id}-new` } : p));
+    expect(failed(caseById("bookshelf-remove-back").check(wrong, bookshelfSpec))).toContain(
+      "ids of untouched parts preserved"
+    );
+  });
+
+  it("rejects geometry drift in an untouched part during removal", () => {
+    const wrong = withoutBack();
+    wrong.parts[0] = {
+      ...wrong.parts[0],
+      position: { ...wrong.parts[0].position, x: wrong.parts[0].position.x + 10 },
+    };
+    expect(failed(caseById("bookshelf-remove-back").check(wrong, bookshelfSpec))).toContain(
+      "geometry of untouched parts preserved"
+    );
+  });
+
+  it("rejects material reassignment on an untouched part during removal", () => {
+    const wrong = withoutBack();
+    wrong.materials.push({ id: "other", name: "Other plywood", kind: "sheet", thickness: 18 });
+    wrong.parts[0] = { ...wrong.parts[0], materialId: "other" };
+    expect(failed(caseById("bookshelf-remove-back").check(wrong, bookshelfSpec))).toContain(
+      "material assignments of untouched parts preserved"
+    );
+  });
+
+  it("rejects an overall bbox change during back removal", () => {
+    const wrong = withoutBack();
+    wrong.bbox = { ...wrong.bbox, w: wrong.bbox.w + 10 };
+    expect(failed(caseById("bookshelf-remove-back").check(wrong, bookshelfSpec))).toContain(
+      "overall bbox preserved"
+    );
+  });
+
+  it("accepts a material-only change after adding a shelf", () => {
+    expect(
+      failed(
+        caseById("bookshelf-birch").check(inBirch(), withGenericPlywoodAndExtraShelf())
+      )
+    ).toEqual([]);
+  });
+
+  it("rejects geometry drift during a material-only change", () => {
+    const wrong = inBirch();
+    wrong.parts = wrong.parts.map((p, i) =>
+      i === 0 ? { ...p, size: { ...p.size, h: p.size.h + 10 } } : p
+    );
+    expect(
+      failed(
+        caseById("bookshelf-birch").check(wrong, withGenericPlywoodAndExtraShelf())
+      )
+    ).toContain("part geometry unchanged");
+  });
+
+  it("rejects an unused birch material while parts keep the old plywood", () => {
+    const wrong = withGenericPlywoodAndExtraShelf();
+    wrong.materials = [
+      ...wrong.materials,
+      { id: "birch-18", name: "18mm birch plywood", kind: "sheet", thickness: 18 },
+    ];
+    expect(
+      failed(
+        caseById("bookshelf-birch").check(wrong, withGenericPlywoodAndExtraShelf())
+      )
+    ).toContain("all 18mm plywood parts use birch plywood");
+  });
+});
+
+describe("large assembly case", () => {
+  it("accepts the prompt-determined 50-panel assembly", () => {
+    expect(failed(caseById("ten-cubby-modules").check(tenModuleFixture()))).toEqual([]);
+  });
+
+  it("rejects correctly named panels that do not construct the requested cubbies", () => {
+    const wrong = tenModuleFixture();
+    wrong.parts = wrong.parts.map((part, i) => ({
+      ...part,
+      size: { w: 100, h: 18, d: 100 },
+      position: { x: (i % 10) * 120, y: Math.floor(i / 10) * 30, z: 0 },
+    }));
+    expect(failed(caseById("ten-cubby-modules").check(wrong))).toContain(
+      "module panel geometry and arrangement match"
+    );
+  });
+
+  it("rejects a generation that silently omits a panel", () => {
+    const wrong = tenModuleFixture();
+    wrong.parts = wrong.parts.slice(0, -1);
+    expect(failed(caseById("ten-cubby-modules").check(wrong))).toContain(
+      "has exactly 50 module panels"
+    );
+  });
+
+  it("rejects a renamed or substituted module panel", () => {
+    const wrong = tenModuleFixture();
+    wrong.parts[0] = { ...wrong.parts[0], id: "unexpected-panel" };
+    expect(failed(caseById("ten-cubby-modules").check(wrong))).toContain(
+      "has the exact five panel ids for every module"
+    );
+  });
+
+  it("rejects a non-plywood panel with the right physical thickness", () => {
+    const wrong = tenModuleFixture();
+    wrong.materials.push({
+      id: "solid-18",
+      name: "18mm solid wood",
+      kind: "solid",
+      thickness: 18,
+    });
+    wrong.parts[0] = { ...wrong.parts[0], materialId: "solid-18" };
+    expect(failed(caseById("ten-cubby-modules").check(wrong))).toContain(
+      "every panel references 18mm sheet material"
+    );
+  });
+});
+
+describe("underspecified request case", () => {
+  it("accepts a valid design that preserves the one explicit dimension", () => {
+    const resolved: FurnitureSpec = {
+      ...bookshelfSpec,
+      name: "Entryway bench",
+      bbox: { ...bookshelfSpec.bbox, w: 1000 },
+    };
+    expect(failed(caseById("entryway-bench").check(resolved))).toEqual([]);
+  });
 });
 
 describe("suite shape", () => {
-  it("covers the four prompts plus the two refinement round-trips", () => {
+  it("covers base, large-assembly, removal, and chained-refinement prompts", () => {
     expect(GOLDEN_CASES.map((c) => c.id)).toEqual([
       "bookshelf",
       "bookshelf-wider",
@@ -133,6 +361,10 @@ describe("suite shape", () => {
       "bedside-table",
       "desk",
       "wardrobe",
+      "entryway-bench",
+      "ten-cubby-modules",
+      "bookshelf-remove-back",
+      "bookshelf-birch",
     ]);
   });
 
@@ -141,6 +373,27 @@ describe("suite shape", () => {
     for (const c of GOLDEN_CASES) {
       if (c.refines) expect(ids.has(c.refines), `${c.id} → ${c.refines}`).toBe(true);
     }
+  });
+
+  it("automatically includes refinement ancestors in dependency order", () => {
+    expect(orderGoldenCases(GOLDEN_CASES, ["bookshelf-birch"]).map((c) => c.id)).toEqual([
+      "bookshelf",
+      "bookshelf-add-shelf",
+      "bookshelf-birch",
+    ]);
+  });
+
+  it("pairs each refinement repetition with the same parent repetition", () => {
+    const parentRun1 = bookshelfSpec;
+    const parentRun2 = widened();
+    const specs = new Map([
+      [goldenRunKey("bookshelf", 1), parentRun1],
+      [goldenRunKey("bookshelf", 2), parentRun2],
+    ]);
+    const refinement = caseById("bookshelf-wider");
+
+    expect(parentSpecFor(refinement, 1, specs)).toBe(parentRun1);
+    expect(parentSpecFor(refinement, 2, specs)).toBe(parentRun2);
   });
 
   it("gives every case at least one check beyond validation", () => {

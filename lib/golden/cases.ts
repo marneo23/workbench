@@ -81,6 +81,18 @@ function idsPreserved(spec: FurnitureSpec, previous: FurnitureSpec | undefined):
   );
 }
 
+function sameGeometry(a: Part, b: Part): boolean {
+  return (
+    a.shape === b.shape &&
+    near(a.size.w, b.size.w) &&
+    near(a.size.h, b.size.h) &&
+    near(a.size.d, b.size.d) &&
+    near(a.position.x, b.position.x) &&
+    near(a.position.y, b.position.y) &&
+    near(a.position.z, b.position.z)
+  );
+}
+
 export const GOLDEN_CASES: GoldenCase[] = [
   {
     id: "bookshelf",
@@ -254,7 +266,300 @@ export const GOLDEN_CASES: GoldenCase[] = [
       ];
     },
   },
+  {
+    id: "entryway-bench",
+    prompt:
+      "Entryway bench for two adults, exactly 1000mm wide. Choose sensible height, depth, construction, and materials.",
+    check(spec) {
+      return [
+        validates(spec),
+        check("preserves the explicit 1000mm width", near(spec.bbox.w, 1000), `${spec.bbox.w}mm`),
+      ];
+    },
+  },
+  {
+    id: "ten-cubby-modules",
+    prompt:
+      "Workshop storage wall, exactly 2500mm wide, 1000mm tall, and 400mm deep. Build ten separate 500×500×400mm open-front cubby modules, five across by two high, using 18mm plywood and exactly five panels per module. Coordinates start at the lower front left. Module N has origin x=(column-1)×500 and y=(row-1)×500. Its sides are 18×500×400 at x and x+482; its bottom and top are 464×18×400 at x+18 and y/y+482; its back is 464×464×18 at x+18, y+18, z=382. Return exactly 50 parts. Use ids module-1-side-left, module-1-side-right, module-1-top, module-1-bottom, module-1-back, and the same suffixes for modules 2 through 10.",
+    check(spec) {
+      const sheetMaterials = spec.materials.filter((m) => m.kind === "sheet");
+      const wrongThickness = spec.parts.filter((p) => !near(thinnest(p), 18, 0.5));
+      const suffixes = ["side-left", "side-right", "top", "bottom", "back"];
+      const expectedIds = new Set(
+        Array.from({ length: 10 }, (_, i) =>
+          suffixes.map((suffix) => `module-${i + 1}-${suffix}`)
+        ).flat()
+      );
+      const actualIds = new Set(spec.parts.map((p) => p.id));
+      const missing = [...expectedIds].filter((id) => !actualIds.has(id));
+      const unexpected = [...actualIds].filter((id) => !expectedIds.has(id));
+      const materialById = new Map(spec.materials.map((m) => [m.id, m]));
+      const wrongMaterial = spec.parts.filter((part) => {
+        const material = materialById.get(part.materialId);
+        return (
+          material?.kind !== "sheet" ||
+          !near(material.thickness ?? 0, 18, 0.5) ||
+          !material.name.toLowerCase().includes("plywood")
+        );
+      });
+      const expectedGeometry = new Map<
+        string,
+        { size: Part["size"]; position: Part["position"] }
+      >();
+      for (let i = 0; i < 10; i++) {
+        const moduleNumber = i + 1;
+        const x = (i % 5) * 500;
+        const y = Math.floor(i / 5) * 500;
+        expectedGeometry.set(`module-${moduleNumber}-side-left`, {
+          size: { w: 18, h: 500, d: 400 },
+          position: { x, y, z: 0 },
+        });
+        expectedGeometry.set(`module-${moduleNumber}-side-right`, {
+          size: { w: 18, h: 500, d: 400 },
+          position: { x: x + 482, y, z: 0 },
+        });
+        expectedGeometry.set(`module-${moduleNumber}-top`, {
+          size: { w: 464, h: 18, d: 400 },
+          position: { x: x + 18, y: y + 482, z: 0 },
+        });
+        expectedGeometry.set(`module-${moduleNumber}-bottom`, {
+          size: { w: 464, h: 18, d: 400 },
+          position: { x: x + 18, y, z: 0 },
+        });
+        expectedGeometry.set(`module-${moduleNumber}-back`, {
+          size: { w: 464, h: 464, d: 18 },
+          position: { x: x + 18, y: y + 18, z: 382 },
+        });
+      }
+      const wrongGeometry = spec.parts.filter((part) => {
+        const expected = expectedGeometry.get(part.id);
+        return (
+          !expected ||
+          part.shape !== "box" ||
+          !near(part.size.w, expected.size.w) ||
+          !near(part.size.h, expected.size.h) ||
+          !near(part.size.d, expected.size.d) ||
+          !near(part.position.x, expected.position.x) ||
+          !near(part.position.y, expected.position.y) ||
+          !near(part.position.z, expected.position.z)
+        );
+      });
+      return [
+        validates(spec),
+        bboxMatches(spec, 2500, 1000, 400),
+        check(
+          "has exactly 50 module panels",
+          spec.parts.length === 50,
+          `${spec.parts.length} parts`
+        ),
+        check(
+          "has the exact five panel ids for every module",
+          missing.length === 0 && unexpected.length === 0,
+          `${missing.length ? `missing: ${missing.join(", ")}` : "none missing"}; ${
+            unexpected.length ? `unexpected: ${unexpected.join(", ")}` : "none unexpected"
+          }`
+        ),
+        check(
+          "every panel references 18mm sheet material",
+          wrongMaterial.length === 0,
+          wrongMaterial.length
+            ? `wrong material: ${wrongMaterial.map((p) => p.id).join(", ")}`
+            : "all panels use 18mm plywood"
+        ),
+        check(
+          "module panel geometry and arrangement match",
+          wrongGeometry.length === 0,
+          wrongGeometry.length
+            ? `wrong geometry: ${wrongGeometry.map((p) => p.id).join(", ")}`
+            : "all ten cubbies match the requested grid"
+        ),
+        check(
+          "uses 18mm sheet material throughout",
+          sheetMaterials.length > 0 &&
+            sheetMaterials.every((m) => near(m.thickness ?? 0, 18, 0.5)) &&
+            wrongThickness.length === 0,
+          `${sheetMaterials.map((m) => `${m.id}:${m.thickness ?? "-"}`).join(" ")}; ${
+            wrongThickness.length
+          } non-18mm parts`
+        ),
+      ];
+    },
+  },
+  {
+    id: "bookshelf-remove-back",
+    refines: "bookshelf",
+    prompt: "Remove the back panel only. Preserve every untouched part and its id.",
+    check(spec, previous) {
+      const previousBack = previous?.parts.find(
+        (p) => mentions(p, "back") || near(thinnest(p), 6, 0.5)
+      );
+      const expectedIds = new Set(
+        previous?.parts.filter((p) => p.id !== previousBack?.id).map((p) => p.id) ?? []
+      );
+      const now = new Set(spec.parts.map((p) => p.id));
+      const lost = [...expectedIds].filter((id) => !now.has(id));
+      const previousById = new Map(previous?.parts.map((p) => [p.id, p]) ?? []);
+      const changedGeometry = spec.parts.filter((part) => {
+        const before = previousById.get(part.id);
+        return before !== undefined && !sameGeometry(part, before);
+      });
+      const changedMaterial = spec.parts.filter((part) => {
+        const before = previousById.get(part.id);
+        return before !== undefined && part.materialId !== before.materialId;
+      });
+      const remainingBacks = spec.parts.filter(
+        (p) => mentions(p, "back") || near(thinnest(p), 6, 0.5)
+      );
+      return [
+        validates(spec),
+        check(
+          "exactly one part removed",
+          previous ? spec.parts.length === previous.parts.length - 1 : false,
+          previous ? `${previous.parts.length} → ${spec.parts.length}` : "no previous"
+        ),
+        check(
+          "back panel removed",
+          remainingBacks.length === 0,
+          remainingBacks.map((p) => p.id).join(", ") || "none"
+        ),
+        check(
+          "ids of untouched parts preserved",
+          previousBack !== undefined && lost.length === 0,
+          previousBack === undefined
+            ? "no previous back panel"
+            : lost.length
+              ? `lost: ${lost.join(", ")}`
+              : `all ${expectedIds.size} untouched ids kept`
+        ),
+        check(
+          "geometry of untouched parts preserved",
+          previousBack !== undefined && changedGeometry.length === 0,
+          changedGeometry.length
+            ? `changed: ${changedGeometry.map((p) => p.id).join(", ")}`
+            : "all untouched geometry stable"
+        ),
+        check(
+          "material assignments of untouched parts preserved",
+          previousBack !== undefined && changedMaterial.length === 0,
+          changedMaterial.length
+            ? `changed: ${changedMaterial.map((p) => p.id).join(", ")}`
+            : "all untouched materials stable"
+        ),
+        check(
+          "overall bbox preserved",
+          previous !== undefined &&
+            near(spec.bbox.w, previous.bbox.w) &&
+            near(spec.bbox.h, previous.bbox.h) &&
+            near(spec.bbox.d, previous.bbox.d),
+          previous
+            ? `${previous.bbox.w}×${previous.bbox.h}×${previous.bbox.d} → ${spec.bbox.w}×${spec.bbox.h}×${spec.bbox.d}`
+            : "no previous"
+        ),
+      ];
+    },
+  },
+  {
+    id: "bookshelf-birch",
+    refines: "bookshelf-add-shelf",
+    prompt:
+      "Change the 18mm plywood material to 18mm birch plywood. Change no dimensions, positions, or part ids.",
+    check(spec, previous) {
+      const previousById = new Map(previous?.parts.map((p) => [p.id, p]) ?? []);
+      const previousMaterialById = new Map(previous?.materials.map((m) => [m.id, m]) ?? []);
+      const materialById = new Map(spec.materials.map((m) => [m.id, m]));
+      const changed = spec.parts.filter((p) => {
+        const before = previousById.get(p.id);
+        return !before || !sameGeometry(p, before);
+      });
+      const notBirch = spec.parts.filter((part) => {
+        const before = previousById.get(part.id);
+        const oldMaterial = before ? previousMaterialById.get(before.materialId) : undefined;
+        if (oldMaterial?.kind !== "sheet" || !near(oldMaterial.thickness ?? 0, 18, 0.5)) {
+          return false;
+        }
+        const material = materialById.get(part.materialId);
+        return !(
+          material?.kind === "sheet" &&
+          near(material.thickness ?? 0, 18, 0.5) &&
+          material.name.toLowerCase().includes("birch")
+        );
+      });
+      return [
+        validates(spec),
+        idsPreserved(spec, previous),
+        check(
+          "part geometry unchanged",
+          previous !== undefined &&
+            spec.parts.length === previous.parts.length &&
+            changed.length === 0 &&
+            near(spec.bbox.w, previous.bbox.w) &&
+            near(spec.bbox.h, previous.bbox.h) &&
+            near(spec.bbox.d, previous.bbox.d),
+          changed.length ? `changed: ${changed.map((p) => p.id).join(", ")}` : "all geometry stable"
+        ),
+        check(
+          "18mm sheet material is birch plywood",
+          spec.materials.some(
+            (m) =>
+              m.kind === "sheet" &&
+              near(m.thickness ?? 0, 18, 0.5) &&
+              m.name.toLowerCase().includes("birch")
+          ),
+          spec.materials.map((m) => `${m.name}:${m.thickness ?? "-"}`).join("; ")
+        ),
+        check(
+          "all 18mm plywood parts use birch plywood",
+          previous !== undefined && notBirch.length === 0,
+          notBirch.length
+            ? `not birch: ${notBirch.map((p) => p.id).join(", ")}`
+            : "all affected parts use birch plywood"
+        ),
+      ];
+    },
+  },
 ];
+
+/** Include selected cases' ancestors and return a stable dependency order. */
+export function orderGoldenCases(
+  cases: GoldenCase[],
+  selectedIds?: string[]
+): GoldenCase[] {
+  const byId = new Map(cases.map((testCase) => [testCase.id, testCase]));
+  const ordered: GoldenCase[] = [];
+  const complete = new Set<string>();
+  const visiting = new Set<string>();
+
+  const visit = (id: string) => {
+    if (complete.has(id)) return;
+    const testCase = byId.get(id);
+    if (!testCase) throw new Error(`unknown golden case "${id}"`);
+    if (visiting.has(id)) throw new Error(`cyclic golden refinement at "${id}"`);
+
+    visiting.add(id);
+    if (testCase.refines) visit(testCase.refines);
+    visiting.delete(id);
+    complete.add(id);
+    ordered.push(testCase);
+  };
+
+  for (const id of selectedIds ?? cases.map((testCase) => testCase.id)) visit(id);
+  return ordered;
+}
+
+export function goldenRunKey(caseId: string, run: number): string {
+  return `${caseId}:${run}`;
+}
+
+/** Resolve a refinement against its matching repetition, never another run. */
+export function parentSpecFor(
+  testCase: GoldenCase,
+  run: number,
+  specs: ReadonlyMap<string, FurnitureSpec>
+): FurnitureSpec | undefined {
+  return testCase.refines
+    ? specs.get(goldenRunKey(testCase.refines, run))
+    : undefined;
+}
 
 export type CaseRun = {
   caseId: string;
