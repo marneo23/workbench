@@ -102,9 +102,38 @@ npm run dev | grep '^workbench.usage ' | sed 's/^workbench.usage //' > usage.jso
 
 | Env | Effect |
 |-----|--------|
+| `DATABASE_URL` | Also persist each real generation as a Neon Postgres row. |
 | `USAGE_LOG_PATH` | Also append rows to this JSONL file. |
 | `USAGE_LOG=0` | Disable usage logging entirely. |
 | `USAGE_RATES` | JSON rate table for cost estimates; unset means token counts only. |
+
+### Durable usage storage
+
+Production uses Neon Postgres through `@neondatabase/serverless`. Provision the
+free Marketplace resource, pull its development variables, then apply the
+idempotent migrations:
+
+```bash
+vercel integration add neon --plan free_v3 --metadata auth=false --no-env-pull
+vercel env pull .env.vercel.local
+# merge DATABASE_URL and DATABASE_URL_UNPOOLED into your existing .env.local
+npm run db:migrate
+```
+
+Pull to a temporary file and merge the database variables; `vercel env pull`
+overwrites its target, so pointing it directly at an existing `.env.local` can
+erase local-only values.
+
+The migration creates `generation_usage`, with dashboard-ready columns for the
+stable user id, timestamp, generation mode, part and attempt counts, input,
+output, and cached tokens, duration, outcome, and estimated cost. The complete
+usage record is retained as `jsonb` for diagnostics. Missing `USAGE_RATES`
+produces a SQL `NULL` cost rather than a fabricated estimate.
+
+The Neon driver and connection are initialized lazily on the first write, so
+builds remain valid before provisioning. Database writes are additive: stdout
+and optional local JSONL capture continue to work. Sink failures are reported
+but never turn a successful generation into a failed request.
 
 Three things the row is shaped to answer, each of which is invisible in the
 response itself:
