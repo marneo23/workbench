@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import {
+  dimensionDraftForValue,
+  type DimensionDraft,
+} from "@/lib/ui/interaction-state";
 
 interface DimensionInputProps {
   label: string;
@@ -17,21 +21,26 @@ interface DimensionInputProps {
  * is held with an inline error until fixed or blurred away.
  */
 export function DimensionInput({ label, value, onCommit, min = 0 }: DimensionInputProps) {
-  const [text, setText] = useState(String(value));
-  const [invalid, setInvalid] = useState(false);
-
-  useEffect(() => {
-    setText(String(value));
-    setInvalid(false);
-  }, [value]);
+  const [draft, setDraft] = useState<DimensionDraft | null>(null);
+  const currentDraft = dimensionDraftForValue(draft, value);
+  if (draft && !currentDraft) {
+    // Discard rather than merely hide stale text. Otherwise a later undo back
+    // to sourceValue would resurrect an obsolete draft.
+    setDraft(null);
+  }
+  // If a gizmo or undo changes the committed value while this field is still
+  // mounted, an old draft must not cover it. Derive the reset during render
+  // instead of synchronously setting state from an effect.
+  const text = currentDraft?.text ?? String(value);
+  const invalid = currentDraft?.invalid ?? false;
 
   const commit = () => {
     const parsed = Number(text);
     if (!Number.isFinite(parsed) || parsed < min) {
-      setInvalid(true);
+      setDraft({ sourceValue: value, text, invalid: true });
       return;
     }
-    setInvalid(false);
+    setDraft(null);
     if (parsed !== value) onCommit(parsed);
   };
 
@@ -42,13 +51,14 @@ export function DimensionInput({ label, value, onCommit, min = 0 }: DimensionInp
         type="text"
         inputMode="decimal"
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) =>
+          setDraft({ sourceValue: value, text: e.target.value, invalid: false })
+        }
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === "Enter") commit();
           if (e.key === "Escape") {
-            setText(String(value));
-            setInvalid(false);
+            setDraft(null);
           }
         }}
         className={`w-16 rounded border px-1.5 py-0.5 font-mono text-xs text-slate-800 outline-none focus:ring-1 ${

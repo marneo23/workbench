@@ -40,26 +40,26 @@ const MICROCOPY: Record<GenStage, string[]> = {
 
 export function GenerationHUD() {
   const status = useSpecStore((s) => s.status);
+  if (status !== "generating") return null;
+  return <ActiveGenerationHUD />;
+}
+
+/** Mounted fresh for each generation, so timer state starts at zero naturally. */
+function ActiveGenerationHUD() {
   const stage = useSpecStore((s) => s.stage);
   const partsCount = useSpecStore((s) => s.pending?.parts.length ?? 0);
-  const generating = status === "generating";
 
   const [elapsed, setElapsed] = useState(0);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    if (!generating) return;
-    setElapsed(0);
-    setTick(0);
     const t0 = Date.now();
     const id = setInterval(() => {
       setElapsed(Math.floor((Date.now() - t0) / 1000));
       setTick((t) => t + 1);
     }, 1000);
     return () => clearInterval(id);
-  }, [generating]);
-
-  if (!generating) return null;
+  }, []);
 
   const activeIdx = Math.max(
     0,

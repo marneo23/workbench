@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Edges, Grid, OrbitControls } from "@react-three/drei";
@@ -13,6 +13,10 @@ import { DimensionOverlay } from "./DimensionOverlay";
 import { ResizeGizmo } from "./ResizeGizmo";
 import { CameraRig } from "./CameraRig";
 import { CAMERA_FOV, framingFor } from "@/lib/geometry/framing";
+import {
+  bindWindowDrag,
+  nextActiveDragCount,
+} from "@/lib/ui/interaction-state";
 
 /**
  * Translucent, gently-breathing bounding volume shown while a piece generates —
@@ -73,28 +77,39 @@ function SettleGroup({ children }: { children: ReactNode }) {
  * anywhere on the figure and drag; the pointer is tracked against the floor
  * plane so the grabbed point stays under the cursor.
  */
-function DraggableScaleFigure({ defaultX }: { defaultX: number }) {
+function DraggableScaleFigure({
+  defaultX,
+  onDragActiveChange,
+}: {
+  defaultX: number;
+  onDragActiveChange: (active: boolean) => void;
+}) {
   const pos = useSpecStore((s) => s.scaleFigurePos);
   const setPos = useSpecStore((s) => s.setScaleFigurePos);
   const camera = useThree((s) => s.camera);
   const gl = useThree((s) => s.gl);
-  const controls = useThree((s) => s.controls) as { enabled: boolean } | null;
+
   const plane = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)); // floor y=0
   const raycaster = useRef(new THREE.Raycaster());
   const grab = useRef(new THREE.Vector2()); // (x, z) offset from figure origin to grab point
+  const cleanupDrag = useRef<(() => void) | null>(null);
+
+  useEffect(() => () => cleanupDrag.current?.(), []);
 
   const x = pos?.[0] ?? defaultX;
   const z = pos?.[1] ?? 0;
 
   const onDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
+    cleanupDrag.current?.();
     const hit = new THREE.Vector3();
     if (!e.ray.intersectPlane(plane.current, hit)) return;
     grab.current.set(hit.x - x, hit.z - z);
-    if (controls) controls.enabled = false;
+    onDragActiveChange(true);
     document.body.style.cursor = "grabbing";
 
-    const move = (ev: PointerEvent) => {
+    const move = (event: Event) => {
+      const ev = event as PointerEvent;
       const rect = gl.domElement.getBoundingClientRect();
       const ndc = new THREE.Vector2(
         ((ev.clientX - rect.left) / rect.width) * 2 - 1,
@@ -106,14 +121,12 @@ function DraggableScaleFigure({ defaultX }: { defaultX: number }) {
         setPos([p.x - grab.current.x, p.z - grab.current.y]);
       }
     };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      if (controls) controls.enabled = true;
+    const finish = () => {
+      cleanupDrag.current = null;
+      onDragActiveChange(false);
       document.body.style.cursor = "";
     };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    cleanupDrag.current = bindWindowDrag(window, move, finish);
   };
 
   return (
@@ -146,6 +159,12 @@ export function Viewport({
   const status = useSpecStore((s) => s.status);
   const pending = useSpecStore((s) => s.pending);
   const salvage = useSpecStore((s) => s.salvage);
+  const [controlsEnabled, setControlsEnabled] = useState(true);
+  const activeDrags = useRef(0);
+  const onDragActiveChange = useCallback((active: boolean) => {
+    activeDrags.current = nextActiveDragCount(activeDrags.current, active);
+    setControlsEnabled(activeDrags.current === 0);
+  }, []);
   const generating = status === "generating";
   // While streaming, render the part-by-part assembly; before the first parts
   // land (or on a bare "generating"), dim the last committed model in place.
@@ -197,10 +216,20 @@ export function Viewport({
       </SettleGroup>
 
       {!generating && !showingSalvage && selectedPart && (
-        <ResizeGizmo part={selectedPart} offset={model.offset} handleSize={handleSize} />
+        <ResizeGizmo
+          part={selectedPart}
+          offset={model.offset}
+          handleSize={handleSize}
+          onDragActiveChange={onDragActiveChange}
+        />
       )}
 
-      {showScaleFigure && <DraggableScaleFigure defaultX={model.bbox.w / 2 + 450} />}
+      {showScaleFigure && (
+        <DraggableScaleFigure
+          defaultX={model.bbox.w / 2 + 450}
+          onDragActiveChange={onDragActiveChange}
+        />
+      )}
       {showDimensions && <DimensionOverlay bbox={model.bbox} />}
 
       {/* Finite grid, everything scaled to the model: an infinite grid with a
@@ -229,6 +258,7 @@ export function Viewport({
       />
       <OrbitControls
         makeDefault
+        enabled={controlsEnabled}
         maxPolarAngle={Math.PI / 2 - 0.02}
         minDistance={diag * 0.3}
         maxDistance={diag * 4}

@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useThree, type ThreeEvent } from "@react-three/fiber";
 import { useSpecStore } from "@/store/useSpecStore";
 import type { Part, Size3, Vec3 } from "@/lib/spec/schema";
+import { bindWindowDrag } from "@/lib/ui/interaction-state";
 
 // Match the buildable minimum in lib/spec/validate.ts so a drag can't create
 // a part thinner than we'd accept.
@@ -34,6 +35,13 @@ function Handle({ position, dir, color, size, onStart, onMove, onEnd }: HandlePr
   const plane = useRef(new THREE.Plane());
   const raycaster = useRef(new THREE.Raycaster());
   const startPt = useRef(new THREE.Vector3());
+  const cleanupDrag = useRef<(() => void) | null>(null);
+  const endRef = useRef(onEnd);
+
+  useEffect(() => {
+    endRef.current = onEnd;
+  }, [onEnd]);
+  useEffect(() => () => cleanupDrag.current?.(), []);
 
   const quat = useMemo(
     () => new THREE.Quaternion().setFromUnitVectors(UP, dir),
@@ -42,6 +50,7 @@ function Handle({ position, dir, color, size, onStart, onMove, onEnd }: HandlePr
 
   const onDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
+    cleanupDrag.current?.();
 
     // Plane through the handle that contains `dir` and faces the camera as
     // much as possible (stable ray/plane intersection while dragging).
@@ -53,7 +62,8 @@ function Handle({ position, dir, color, size, onStart, onMove, onEnd }: HandlePr
     onStart();
     document.body.style.cursor = "grabbing";
 
-    const move = (ev: PointerEvent) => {
+    const move = (event: Event) => {
+      const ev = event as PointerEvent;
       const rect = gl.domElement.getBoundingClientRect();
       const ndc = new THREE.Vector2(
         ((ev.clientX - rect.left) / rect.width) * 2 - 1,
@@ -65,14 +75,12 @@ function Handle({ position, dir, color, size, onStart, onMove, onEnd }: HandlePr
         onMove(hit.sub(startPt.current).dot(dir));
       }
     };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
+    const finish = () => {
+      cleanupDrag.current = null;
       document.body.style.cursor = "";
-      onEnd();
+      endRef.current();
     };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    cleanupDrag.current = bindWindowDrag(window, move, finish);
   };
 
   return (
@@ -100,6 +108,7 @@ interface ResizeGizmoProps {
   /** scene offset applied by the render builder (spec coords + offset = scene) */
   offset: [number, number, number];
   handleSize: number;
+  onDragActiveChange: (active: boolean) => void;
 }
 
 const DIMS = ["w", "h", "d"] as const;
@@ -116,10 +125,14 @@ const UNITS = [
  * (clamped at the origin). Live updates during the drag are untracked; the
  * whole drag lands as a single undo step on release.
  */
-export function ResizeGizmo({ part, offset, handleSize }: ResizeGizmoProps) {
+export function ResizeGizmo({
+  part,
+  offset,
+  handleSize,
+  onDragActiveChange,
+}: ResizeGizmoProps) {
   const updatePart = useSpecStore((s) => s.updatePart);
   const resizePart = useSpecStore((s) => s.resizePart);
-  const controls = useThree((s) => s.controls) as { enabled: boolean } | null;
 
   const start = useRef<{ size: Size3; position: Vec3 } | null>(null);
   const active = useRef<{ size: Size3; position: Vec3 } | null>(null);
@@ -128,7 +141,7 @@ export function ResizeGizmo({ part, offset, handleSize }: ResizeGizmoProps) {
     start.current = { size: { ...part.size }, position: { ...part.position } };
     active.current = null;
     useSpecStore.temporal.getState().pause(); // don't record every drag frame
-    if (controls) controls.enabled = false;
+    onDragActiveChange(true);
   };
 
   const move = (axis: number, sign: number, delta: number) => {
@@ -161,7 +174,7 @@ export function ResizeGizmo({ part, offset, handleSize }: ResizeGizmoProps) {
   };
 
   const end = () => {
-    if (controls) controls.enabled = true;
+    onDragActiveChange(false);
     const s0 = start.current;
     const fin = active.current;
     const temporal = useSpecStore.temporal.getState();
