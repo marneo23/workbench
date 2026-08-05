@@ -103,6 +103,7 @@ npm run dev | grep '^workbench.usage ' | sed 's/^workbench.usage //' > usage.jso
 | Env | Effect |
 |-----|--------|
 | `DATABASE_URL` | Also persist each real generation as a Neon Postgres row. |
+| `WORKBENCH_OWNER_KEY` | Separate Bearer credential for the private usage dashboard. |
 | `USAGE_LOG_PATH` | Also append rows to this JSONL file. |
 | `USAGE_LOG=0` | Disable usage logging entirely. |
 | `USAGE_RATES` | JSON rate table for cost estimates; unset means token counts only. |
@@ -134,6 +135,27 @@ The Neon driver and connection are initialized lazily on the first write, so
 builds remain valid before provisioning. Database writes are additive: stdout
 and optional local JSONL capture continue to work. Sink failures are reported
 but never turn a successful generation into a failed request.
+
+### Owner usage dashboard
+
+Open `/owner/usage` to view all-time request, token, cached-token, cost, retry,
+and outcome totals; the same metrics per stable invite identity; and the latest
+100 generation requests. The page stores its accepted owner key locally in the
+browser and sends it only as a Bearer credential to `/api/owner/usage`.
+
+Set `WORKBENCH_OWNER_KEY` to a unique, random, header-safe value of 16–256
+characters. It must be different from every value in `WORKBENCH_ACCESS_KEYS`;
+the server rejects shared-key configuration, and an ordinary invite key cannot
+read cross-user data. Owner access fails closed in development and production.
+
+```bash
+vercel env add WORKBENCH_OWNER_KEY production,preview --sensitive
+vercel env add WORKBENCH_OWNER_KEY development
+```
+
+The API initializes Neon only after owner authorization succeeds and returns
+`Cache-Control: no-store`. Cost totals display as **Unpriced** if any included
+row lacks a rate rather than presenting a misleading partial total.
 
 Three things the row is shaped to answer, each of which is invisible in the
 response itself:
