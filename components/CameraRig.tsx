@@ -8,8 +8,11 @@ import { useSpecStore } from "@/store/useSpecStore";
 import {
   DRIFT_MAX,
   framingFor,
-  needsReframe,
 } from "@/lib/geometry/framing";
+import {
+  createCameraRigState,
+  transitionCameraRig,
+} from "@/lib/geometry/camera-rig-state";
 
 /**
  * Camera choreography during assembly, and the fix for a real framing bug:
@@ -55,15 +58,13 @@ export function CameraRig({ bbox }: { bbox: Bbox }) {
   const controls = useThree((s) => s.controls) as OrbitControlsImpl | null;
   const generating = useSpecStore((s) => s.status === "generating");
 
-  const engaged = useRef(false);
-  const userTook = useRef(false);
-  const lastDiag = useRef<number | null>(null);
-  const drift = useRef(0);
+  const rig = useRef<ReturnType<typeof createCameraRigState> | null>(null);
   // Scratch vectors: allocating per frame would churn the GC at 60fps.
   const desiredPos = useRef(new THREE.Vector3());
   const desiredTarget = useRef(new THREE.Vector3());
 
   const { diag, position, target, near, far } = framingFor(bbox);
+  if (rig.current === null) rig.current = createCameraRigState(diag);
 
   // Point the controls at the model's mid-height on mount. The rig owns the
   // target from here on, so <OrbitControls> must not pass a `target` prop.
@@ -76,15 +77,12 @@ export function CameraRig({ bbox }: { bbox: Bbox }) {
   }, [controls]);
 
   useEffect(() => {
-    if (lastDiag.current === null) {
-      lastDiag.current = diag; // opening framing already came from <Canvas>
-      return;
-    }
-    if (!needsReframe(lastDiag.current, diag)) return;
-    lastDiag.current = diag;
-    engaged.current = true;
-    userTook.current = false;
-    applyClipPlanes(camera, near, far);
+    const result = transitionCameraRig(rig.current!, {
+      type: "bbox-change",
+      diag,
+    });
+    rig.current = result.state;
+    if (result.reframed) applyClipPlanes(camera, near, far);
   }, [diag, near, far, camera]);
 
   // Every generation engages the rig, not just ones that change the piece's
@@ -93,39 +91,44 @@ export function CameraRig({ bbox }: { bbox: Bbox }) {
   // azimuth can't wander around to the back of the piece over several runs.
   useEffect(() => {
     if (!generating) return;
-    drift.current = 0;
-    engaged.current = true;
-    userTook.current = false;
+    rig.current = transitionCameraRig(rig.current!, {
+      type: "generation-start",
+    }).state;
   }, [generating]);
 
   // Any manual orbit hands the camera to the user for the rest of this piece.
   useEffect(() => {
     if (!controls) return;
     const onStart = () => {
-      userTook.current = true;
-      engaged.current = false;
+      rig.current = transitionCameraRig(rig.current!, {
+        type: "user-orbit",
+      }).state;
     };
     controls.addEventListener("start", onStart);
     return () => controls.removeEventListener("start", onStart);
   }, [controls]);
 
   useFrame((_, rawDelta) => {
-    if (!controls || !engaged.current) return;
+    if (!controls || !rig.current?.engaged) return;
     const delta = Math.min(rawDelta, 0.1); // a backgrounded tab returns a huge delta
 
     // Drift out slowly while the piece assembles, then unwind back to the
     // canonical 3/4 view once it is done. Freezing wherever the drift happened
     // to stop is the wrong ending: the last frame is the one the user
     // remembers, so it should be the view that best shows the piece.
-    if (generating && !userTook.current) {
-      drift.current = Math.min(DRIFT_MAX, drift.current + delta * DRIFT_RATE);
-    } else if (drift.current !== 0) {
-      drift.current *= Math.exp(-DRIFT_RETURN_K * delta);
-      if (Math.abs(drift.current) < 1e-4) drift.current = 0;
-    }
+    rig.current = transitionCameraRig(rig.current, {
+      type: "frame",
+      generating,
+      driftStep: delta * DRIFT_RATE,
+      unwindFactor: Math.exp(-DRIFT_RETURN_K * delta),
+      driftMax: DRIFT_MAX,
+      driftEpsilon: 1e-4,
+      // Convergence is checked after this frame's camera movement below.
+      converged: false,
+    }).state;
 
     desiredTarget.current.set(...target);
-    desiredPos.current.set(...position).applyAxisAngle(UP, drift.current);
+    desiredPos.current.set(...position).applyAxisAngle(UP, rig.current.drift);
 
     const t = 1 - Math.exp(-EASE_K * delta); // frame-rate independent easing
     camera.position.lerp(desiredPos.current, t);
@@ -137,12 +140,16 @@ export function CameraRig({ bbox }: { bbox: Bbox }) {
     // The drift check matters: mid-unwind the camera and its (still moving)
     // target can pass within epsilon of each other, which would otherwise
     // disengage the rig and strand the view at a half-unwound angle.
-    if (
-      !generating &&
-      drift.current === 0 &&
-      camera.position.distanceTo(desiredPos.current) < diag * 0.002
-    ) {
-      engaged.current = false;
+    if (!generating && rig.current.drift === 0) {
+      rig.current = transitionCameraRig(rig.current, {
+        type: "frame",
+        generating: false,
+        driftStep: 0,
+        unwindFactor: 1,
+        driftMax: DRIFT_MAX,
+        driftEpsilon: 1e-4,
+        converged: camera.position.distanceTo(desiredPos.current) < diag * 0.002,
+      }).state;
     }
   });
 
