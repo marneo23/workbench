@@ -22,6 +22,13 @@ import {
   buildUserMessage,
 } from "@/lib/llm/prompts";
 import { mockAllowed, runMockStream } from "@/lib/llm/mock";
+import {
+  buildUsageRecord,
+  fromProviderUsage,
+  type Attempt,
+  type ProviderUsage,
+} from "@/lib/usage/record";
+import { createUsageSink, safeWrite } from "@/lib/usage/sink";
 
 export const maxDuration = 300;
 
@@ -33,6 +40,8 @@ const RequestSchema = z.object({
   /** debug: replay the reference spec locally, no LLM call and no cost */
   mock: z.boolean().optional(),
   mockScenario: z.enum(["success", "slow", "retry", "error"]).optional(),
+  /** free-form tag recorded on the usage row; the golden suite sends a case id */
+  label: z.string().max(64).optional(),
 });
 
 const MODEL = process.env.OPENAI_MODEL ?? "gpt-5.1";
@@ -79,6 +88,17 @@ function mapError(e: unknown): {
 const COULD_NOT_BUILD =
   "Couldn't produce a valid buildable spec for that request. Try being more specific about dimensions.";
 
+const sink = createUsageSink();
+
+/** Per-request facts the usage record needs that the messages array has lost. */
+type RequestMeta = {
+  mode: "new" | "refinement";
+  label?: string;
+  promptChars: number;
+  inputSpecChars?: number;
+  inputParts?: number;
+};
+
 function buildRetryTurns(
   base: ModelMessage[],
   rawAssistant: string,
@@ -103,14 +123,32 @@ function buildRetryTurns(
 
 function runStream(
   request: Request,
-  baseMessages: ModelMessage[]
+  baseMessages: ModelMessage[],
+  meta: RequestMeta
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
+  const startedAt = Date.now();
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (event: unknown) =>
         controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+
+      const attempts: Attempt[] = [];
+      let succeeded = false;
+      let cancelled = false;
+      let errorCode: string | undefined;
+      let emittedChars = 0;
+      let outputParts = 0;
+
+      // Parts go out through here so a cancelled request still leaves a record
+      // of how much output was paid for before the abort.
+      const sendPart = (part: unknown) => {
+        const line = JSON.stringify({ type: "part", part });
+        emittedChars += line.length;
+        outputParts++;
+        controller.enqueue(encoder.encode(line + "\n"));
+      };
 
       try {
         let messages = baseMessages;
@@ -120,12 +158,31 @@ function runStream(
         for (let attempt = 0; attempt < MAX_ATTEMPTS && !finalSpec; attempt++) {
           if (attempt > 0) send({ type: "reset" });
 
+          // Captured per attempt, not once per request: a retry is a second
+          // billed call whose input carries the failed spec on top of the
+          // original messages, so it costs more than the first, not less.
+          let attemptUsage: ProviderUsage | undefined;
+          const noteAttempt = (validationErrors: number) => {
+            attempts.push({
+              attempt: attempts.length + 1,
+              tokens: fromProviderUsage(attemptUsage),
+              reported: attemptUsage != null,
+              validationErrors,
+              estimated: false,
+            });
+          };
+
           const result = streamObject({
             ...objectCall,
             schema: FurnitureSpecSchema,
             system: SYSTEM_PROMPT,
             messages,
             abortSignal: request.signal,
+            // Fires even when the final object fails schema validation — which
+            // is precisely the attempt that would otherwise go unmeasured.
+            onFinish: (e) => {
+              attemptUsage = e.usage;
+            },
           });
 
           let metaSent = false;
@@ -160,7 +217,7 @@ function runStream(
               while (emitted < parts.length - 1) {
                 const p = PartSchema.safeParse(parts[emitted]);
                 if (!p.success) break;
-                send({ type: "part", part: p.data });
+                sendPart(p.data);
                 emitted++;
               }
             }
@@ -171,6 +228,10 @@ function runStream(
             obj = await result.object;
           } catch (e) {
             if (NoObjectGeneratedError.isInstance(e)) {
+              // The error carries the usage of the call that produced nothing
+              // usable — still billed, so it still counts.
+              attemptUsage ??= e.usage;
+              noteAttempt(1);
               lastErrors = [
                 { code: "no-object", message: "model did not produce a valid spec" },
               ];
@@ -183,14 +244,16 @@ function runStream(
           // Flush meta + any parts not yet emitted, from the validated object.
           trySendMeta(obj.name, obj.bbox, obj.materials, true);
           while (emitted < obj.parts.length) {
-            send({ type: "part", part: obj.parts[emitted] });
+            sendPart(obj.parts[emitted]);
             emitted++;
           }
 
           send({ type: "stage", stage: "validating" });
           const { errors, warnings } = validateSpec(obj);
+          noteAttempt(errors.length);
           if (errors.length === 0) {
             finalSpec = obj;
+            succeeded = true;
             send({ type: "done", spec: obj, warnings });
           } else {
             lastErrors = errors;
@@ -209,15 +272,53 @@ function runStream(
         controller.close();
       } catch (e) {
         if (request.signal.aborted) {
+          cancelled = true;
           controller.close();
           return;
         }
+        const mapped = mapError(e);
+        errorCode = String(mapped.status);
         try {
-          send({ type: "error", ...mapError(e) });
+          send({ type: "error", ...mapped });
         } catch {
           // controller already closed
         }
         controller.close();
+      } finally {
+        // In `finally`, not on the success path: a request that failed
+        // validation twice or was cancelled mid-stream has still been paid for,
+        // and those are the two cases worth watching.
+        if (cancelled && attempts.length === 0) {
+          // Aborted before onFinish could report. A call was still billed; the
+          // char counts are the only material a cost model has to work from.
+          attempts.push({
+            attempt: 1,
+            tokens: {},
+            reported: false,
+            validationErrors: 0,
+            estimated: true,
+          });
+        }
+        await safeWrite(
+          sink,
+          buildUsageRecord({
+            model: MODEL,
+            mode: meta.mode,
+            label: meta.label,
+            streaming: true,
+            attempts,
+            succeeded,
+            cancelled,
+            apiError: errorCode !== undefined,
+            errorCode,
+            durationMs: Date.now() - startedAt,
+            promptChars: meta.promptChars,
+            inputSpecChars: meta.inputSpecChars,
+            inputParts: meta.inputParts,
+            emittedChars,
+            outputParts,
+          })
+        );
       }
     },
   });
@@ -227,49 +328,97 @@ function runStream(
 
 async function generateBlocking(
   request: Request,
-  baseMessages: ModelMessage[]
+  baseMessages: ModelMessage[],
+  meta: RequestMeta
 ): Promise<Response> {
-  let messages = baseMessages;
-  let lastErrors: ValidationIssue[] = [];
+  const startedAt = Date.now();
+  const attempts: Attempt[] = [];
+  let succeeded = false;
+  let errorCode: string | undefined;
+  let outputParts = 0;
 
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    let obj: FurnitureSpec;
-    try {
-      const result = await generateObject({
-        ...objectCall,
-        schema: FurnitureSpecSchema,
-        system: SYSTEM_PROMPT,
-        messages,
-        abortSignal: request.signal,
-      });
-      obj = result.object;
-    } catch (e) {
-      if (NoObjectGeneratedError.isInstance(e)) {
-        lastErrors = [
-          { code: "no-object", message: "model did not produce a valid spec" },
-        ];
-        messages = buildRetryTurns(baseMessages, e.text ?? "", lastErrors);
-        continue;
+  try {
+    let messages = baseMessages;
+    let lastErrors: ValidationIssue[] = [];
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      let obj: FurnitureSpec;
+      let attemptUsage: ProviderUsage | undefined;
+      const noteAttempt = (validationErrors: number) => {
+        attempts.push({
+          attempt: attempts.length + 1,
+          tokens: fromProviderUsage(attemptUsage),
+          reported: attemptUsage != null,
+          validationErrors,
+          estimated: false,
+        });
+      };
+
+      try {
+        const result = await generateObject({
+          ...objectCall,
+          schema: FurnitureSpecSchema,
+          system: SYSTEM_PROMPT,
+          messages,
+          abortSignal: request.signal,
+        });
+        attemptUsage = result.usage;
+        obj = result.object;
+      } catch (e) {
+        if (NoObjectGeneratedError.isInstance(e)) {
+          attemptUsage = e.usage;
+          noteAttempt(1);
+          lastErrors = [
+            { code: "no-object", message: "model did not produce a valid spec" },
+          ];
+          messages = buildRetryTurns(baseMessages, e.text ?? "", lastErrors);
+          continue;
+        }
+        const m = mapError(e);
+        errorCode = String(m.status);
+        return NextResponse.json(
+          { error: m.error, ...(m.details ? { details: m.details } : {}) },
+          { status: m.status }
+        );
       }
-      const m = mapError(e);
-      return NextResponse.json(
-        { error: m.error, ...(m.details ? { details: m.details } : {}) },
-        { status: m.status }
-      );
+
+      const { errors, warnings } = validateSpec(obj);
+      noteAttempt(errors.length);
+      if (errors.length === 0) {
+        succeeded = true;
+        outputParts = obj.parts.length;
+        return NextResponse.json({ spec: obj, warnings });
+      }
+      lastErrors = errors;
+      messages = buildRetryTurns(baseMessages, JSON.stringify(obj), errors);
     }
 
-    const { errors, warnings } = validateSpec(obj);
-    if (errors.length === 0) {
-      return NextResponse.json({ spec: obj, warnings });
-    }
-    lastErrors = errors;
-    messages = buildRetryTurns(baseMessages, JSON.stringify(obj), errors);
+    return NextResponse.json(
+      { error: COULD_NOT_BUILD, details: lastErrors.map((e) => e.message) },
+      { status: 422 }
+    );
+  } finally {
+    // Every `return` above passes through here, including the error paths.
+    await safeWrite(
+      sink,
+      buildUsageRecord({
+        model: MODEL,
+        mode: meta.mode,
+        label: meta.label,
+        streaming: false,
+        attempts,
+        succeeded,
+        cancelled: request.signal.aborted,
+        apiError: errorCode !== undefined,
+        errorCode,
+        durationMs: Date.now() - startedAt,
+        promptChars: meta.promptChars,
+        inputSpecChars: meta.inputSpecChars,
+        inputParts: meta.inputParts,
+        outputParts,
+      })
+    );
   }
-
-  return NextResponse.json(
-    { error: COULD_NOT_BUILD, details: lastErrors.map((e) => e.message) },
-    { status: 422 }
-  );
 }
 
 const NDJSON_HEADERS = {
@@ -283,7 +432,7 @@ export async function POST(request: Request) {
   if (!body.success) {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
-  const { prompt, currentSpec, stream, mock, mockScenario } = body.data;
+  const { prompt, currentSpec, stream, mock, mockScenario, label } = body.data;
 
   // Debug mode short-circuits everything above the protocol: no API key needed,
   // no tokens spent. Ignored in production unless explicitly allowed.
@@ -305,9 +454,22 @@ export async function POST(request: Request) {
     { role: "user", content: buildUserMessage(prompt, currentSpec) },
   ];
 
+  // A refinement carries the entire current spec up and regenerates the entire
+  // spec back, so its cost tracks part count, not the size of the edit. Kept as
+  // its own dimension because that is the distinction Phase C acts on.
+  const meta: RequestMeta = {
+    mode: currentSpec ? "refinement" : "new",
+    label,
+    promptChars: prompt.length,
+    inputSpecChars: currentSpec ? JSON.stringify(currentSpec).length : undefined,
+    inputParts: currentSpec?.parts.length,
+  };
+
   if (!(stream ?? STREAMING_DEFAULT)) {
-    return generateBlocking(request, messages);
+    return generateBlocking(request, messages, meta);
   }
 
-  return new Response(runStream(request, messages), { headers: NDJSON_HEADERS });
+  return new Response(runStream(request, messages, meta), {
+    headers: NDJSON_HEADERS,
+  });
 }
