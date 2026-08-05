@@ -1,7 +1,7 @@
 /**
  * Phase A2 — the golden-prompt suite.
  *
- *   npm run golden -- --yes [--runs=3] [--cases=bookshelf,desk] [--pdf]
+ *   npm run golden -- --yes [--runs=3] [--cases=bookshelf,desk] [--pdf] [--out=DIR]
  *
  * SPENDS REAL MONEY. Every run is a live generation, which is why `--yes` is
  * required and why this is not in CI.
@@ -19,7 +19,19 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { GOLDEN_CASES, scoreRuns, type CaseRun } from "@/lib/golden/cases";
+import {
+  GOLDEN_CASES,
+  goldenRunKey,
+  orderGoldenCases,
+  parentSpecFor,
+  scoreRuns,
+  type CaseRun,
+} from "@/lib/golden/cases";
+import {
+  artifactFileName,
+  buildGoldenArtifact,
+  serializeGoldenArtifact,
+} from "@/lib/golden/artifacts";
 import { FurnitureSpecSchema, type FurnitureSpec } from "@/lib/spec/schema";
 import { generateFurniturePdf } from "@/lib/pdf/generate";
 
@@ -49,15 +61,8 @@ function parseArgs(argv: string[]): Args {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const selected = args.cases
-  ? GOLDEN_CASES.filter((c) => args.cases!.includes(c.id))
-  : GOLDEN_CASES;
-
-// Refinement cases need their parent's spec, so parents run first.
-const ordered = [
-  ...selected.filter((c) => !c.refines),
-  ...selected.filter((c) => c.refines),
-];
+// Refinement selections automatically bring along their complete parent chain.
+const ordered = orderGoldenCases(GOLDEN_CASES, args.cases);
 
 async function generate(
   prompt: string,
@@ -115,27 +120,39 @@ async function main() {
     `Golden suite: ${ordered.length} case(s) × ${args.runs} run(s) = ${totalCalls} calls against ${args.base}\n`
   );
 
-  if (args.pdf) await mkdir(args.outDir, { recursive: true });
+  // JSON evidence is always preserved; --pdf only adds visual spot-checks.
+  await mkdir(args.outDir, { recursive: true });
 
   const results: CaseRun[] = [];
-  /** Most recent successful spec per case, so refinements have a parent. */
-  const lastSpec = new Map<string, FurnitureSpec>();
+  /** Specs are paired by case and repetition so refinement chains stay independent. */
+  const specs = new Map<string, FurnitureSpec>();
 
   for (const testCase of ordered) {
     for (let run = 1; run <= args.runs; run++) {
       const tag = `${testCase.id} #${run}`;
-      const previous = testCase.refines ? lastSpec.get(testCase.refines) : undefined;
+      const previous = parentSpecFor(testCase, run, specs);
 
       if (testCase.refines && !previous) {
         console.log(`  ${tag}: SKIP — parent case "${testCase.refines}" never produced a spec`);
-        results.push({
+        const result: CaseRun = {
           caseId: testCase.id,
           run,
           ok: false,
           checks: [],
           error: `no parent spec from "${testCase.refines}"`,
           durationMs: 0,
-        });
+        };
+        results.push(result);
+        await writeFile(
+          path.join(args.outDir, artifactFileName(testCase.id, run)),
+          serializeGoldenArtifact(
+            buildGoldenArtifact({
+              ...result,
+              prompt: testCase.prompt,
+              ...(testCase.refines ? { refines: testCase.refines } : {}),
+            })
+          )
+        );
         continue;
       }
 
@@ -148,13 +165,31 @@ async function main() {
 
       if (!spec) {
         console.log(`FAIL — ${error}`);
-        results.push({ caseId: testCase.id, run, ok: false, checks: [], error, durationMs });
+        const result: CaseRun = {
+          caseId: testCase.id,
+          run,
+          ok: false,
+          checks: [],
+          error,
+          durationMs,
+        };
+        results.push(result);
+        await writeFile(
+          path.join(args.outDir, artifactFileName(testCase.id, run)),
+          serializeGoldenArtifact(
+            buildGoldenArtifact({
+              ...result,
+              prompt: testCase.prompt,
+              ...(testCase.refines ? { refines: testCase.refines } : {}),
+            })
+          )
+        );
         continue;
       }
 
       const checks = testCase.check(spec, previous);
       const ok = checks.every((c) => c.pass);
-      lastSpec.set(testCase.id, spec);
+      specs.set(goldenRunKey(testCase.id, run), spec);
 
       console.log(
         `${ok ? "PASS" : "FAIL"} (${checks.filter((c) => c.pass).length}/${checks.length}, ${
@@ -164,6 +199,22 @@ async function main() {
       for (const c of checks) {
         if (!c.pass) console.log(`      ✗ ${c.name} — ${c.detail}`);
       }
+
+      await writeFile(
+        path.join(args.outDir, artifactFileName(testCase.id, run)),
+        serializeGoldenArtifact(
+          buildGoldenArtifact({
+            caseId: testCase.id,
+            run,
+            prompt: testCase.prompt,
+            ...(testCase.refines ? { refines: testCase.refines } : {}),
+            durationMs,
+            ok,
+            checks,
+            spec,
+          })
+        )
+      );
 
       if (args.pdf) {
         const bytes = await generateFurniturePdf(spec);
