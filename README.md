@@ -91,8 +91,8 @@ response itself:
 - **Refinements are not cheap follow-ups.** The prompt requires the complete
   updated spec rather than a diff, so a refinement regenerates the whole piece.
   `mode` and `inputParts` are recorded to size that.
-- **Prompt caching is unverified.** The system prompt is frozen and sent first
-  so it caches; `cacheReadTokens` is what confirms that actually happens.
+- **Prompt caching is measured, not assumed.** The system prompt is frozen and
+  sent first so it is eligible; `cacheReadTokens` confirms each actual cache hit.
 
 Rates in `lib/usage/pricing.ts` are intentionally **empty** — fill them from
 current provider pricing, never from memory. Until then `estimateCostUsd`
@@ -127,12 +127,19 @@ npm run usage:report                        # validity and cost, same session
 | `--yes` | Required. Confirms you meant to spend money. |
 | `--runs=N` | Repeat each case; the retry rate is a distribution, not a point. |
 | `--cases=a,b` | Run a subset. |
-| `--pdf` | Write a PDF per run to `./golden-out` for spot-checking labels. |
+| `--out=DIR` | Artifact directory; defaults to `./golden-out`. |
+| `--pdf` | Also write a PDF per run for visual spot-checking. |
 | `--base=URL` | Target a different server. |
 
-Cases live in `lib/golden/cases.ts` — four prompts plus two refinement
-round-trips on the bookshelf. Each request carries `label: <case id>`, which is
-what joins a case to its cost in the usage log.
+Cases live in `lib/golden/cases.ts` — the original four designs, an
+underspecified bench, a 50-part stress case, and four refinement checks covering
+resize, addition, removal, material-only changes, and stable ids across a
+chained refinement. Each request carries `label: <case id>`, which is what joins
+a case to its cost in the usage log.
+
+Every run writes a JSON artifact containing the generated spec, prompt, checks,
+timing, and outcome. Failed calls are recorded too, even when no spec exists.
+These artifacts are always written; `--pdf` adds a visual rendering beside them.
 
 The checks are pure functions over a spec, so they are themselves tested
 (`__tests__/golden.test.ts`) against the hand-authored reference spec — which
