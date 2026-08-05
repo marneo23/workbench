@@ -151,6 +151,7 @@ describe("classifyOutcome", () => {
 
 describe("buildUsageRecord", () => {
   const base = {
+    userId: "alice",
     model: "test-model",
     mode: "new" as const,
     streaming: true,
@@ -170,6 +171,7 @@ describe("buildUsageRecord", () => {
     });
 
     expect(record.tokens.inputTokens).toBe(8500);
+    expect(record.userId).toBe("alice");
     expect(record.attemptsUsed).toBe(2);
     expect(record.outcome).toBe("retry-success");
     // Per-attempt survives: attempt 2 should show a bigger cache read than

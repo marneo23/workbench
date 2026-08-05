@@ -23,6 +23,7 @@ const attempt = (over: Partial<Attempt> = {}): Attempt => ({
 
 const row = (over: Partial<Parameters<typeof buildUsageRecord>[0]> = {}): UsageRecord =>
   buildUsageRecord({
+    userId: "local",
     model: "m",
     mode: "new",
     streaming: true,

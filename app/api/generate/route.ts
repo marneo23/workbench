@@ -29,6 +29,11 @@ import {
   type ProviderUsage,
 } from "@/lib/usage/record";
 import { createUsageSink, safeWrite } from "@/lib/usage/sink";
+import {
+  accessStatus,
+  bearerToken,
+  resolveAccess,
+} from "@/lib/access/keys";
 
 export const maxDuration = 300;
 
@@ -92,6 +97,7 @@ const sink = createUsageSink();
 
 /** Per-request facts the usage record needs that the messages array has lost. */
 type RequestMeta = {
+  userId: string;
   mode: "new" | "refinement";
   label?: string;
   promptChars: number;
@@ -302,6 +308,7 @@ function runStream(
         await safeWrite(
           sink,
           buildUsageRecord({
+            userId: meta.userId,
             model: MODEL,
             mode: meta.mode,
             label: meta.label,
@@ -402,6 +409,7 @@ async function generateBlocking(
     await safeWrite(
       sink,
       buildUsageRecord({
+        userId: meta.userId,
         model: MODEL,
         mode: meta.mode,
         label: meta.label,
@@ -427,7 +435,47 @@ const NDJSON_HEADERS = {
   "X-Accel-Buffering": "no",
 };
 
+const production = process.env.NODE_ENV === "production";
+
+export function GET(request: Request) {
+  const status = accessStatus(process.env.WORKBENCH_ACCESS_KEYS, production);
+  const access = resolveAccess(
+    process.env.WORKBENCH_ACCESS_KEYS,
+    bearerToken(request.headers.get("authorization")),
+    production
+  );
+  return NextResponse.json(
+    {
+      ...status,
+      authorized: access.status === "authorized",
+      ...(access.status === "authorized" ? { userId: access.userId } : {}),
+    },
+    {
+      status: access.status === "misconfigured" ? 503 : 200,
+      headers: { "Cache-Control": "no-store" },
+    }
+  );
+}
+
 export async function POST(request: Request) {
+  const access = resolveAccess(
+    process.env.WORKBENCH_ACCESS_KEYS,
+    bearerToken(request.headers.get("authorization")),
+    production
+  );
+  if (access.status === "misconfigured") {
+    return NextResponse.json(
+      { error: "Server access control is not configured." },
+      { status: 503 }
+    );
+  }
+  if (access.status === "unauthorized") {
+    return NextResponse.json(
+      { error: "A valid access key is required." },
+      { status: 401, headers: { "WWW-Authenticate": "Bearer" } }
+    );
+  }
+
   const body = RequestSchema.safeParse(await request.json().catch(() => null));
   if (!body.success) {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
@@ -458,6 +506,7 @@ export async function POST(request: Request) {
   // spec back, so its cost tracks part count, not the size of the edit. Kept as
   // its own dimension because that is the distinction Phase C acts on.
   const meta: RequestMeta = {
+    userId: access.userId,
     mode: currentSpec ? "refinement" : "new",
     label,
     promptChars: prompt.length,

@@ -104,6 +104,7 @@ async function main() {
   }
 
   printSummary("overall", summarize(records, { rates }));
+  bySelector(records, "user", (r) => r.userId);
   bySelector(records, "mode", (r) => r.mode);
   bySelector(records, "case", (r) => r.label);
 

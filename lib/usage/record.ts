@@ -128,6 +128,8 @@ export type UsageRecord = {
   /** Discriminator, so a log can carry more than one record type later. */
   kind: "generate";
   ts: string;
+  /** Stable attribution from the server-side access-key mapping; never the key. */
+  userId: string;
   model: string;
   /**
    * A refinement resends the whole spec and regenerates the whole spec
@@ -163,6 +165,7 @@ export type UsageRecord = {
 };
 
 export type BuildRecordInput = {
+  userId: string;
   model: string;
   mode: "new" | "refinement";
   label?: string;
@@ -187,6 +190,7 @@ export function buildUsageRecord(input: BuildRecordInput): UsageRecord {
   return {
     kind: "generate",
     ts: (input.now?.() ?? new Date()).toISOString(),
+    userId: input.userId,
     model: input.model,
     mode: input.mode,
     label: input.label,

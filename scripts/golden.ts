@@ -73,7 +73,12 @@ async function generate(
   try {
     const res = await fetch(`${args.base}/api/generate`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(process.env.WORKBENCH_ACCESS_KEY
+          ? { Authorization: `Bearer ${process.env.WORKBENCH_ACCESS_KEY}` }
+          : {}),
+      },
       // Blocking mode: one JSON response instead of the NDJSON protocol. The
       // usage record is written either way.
       body: JSON.stringify({ prompt, label, stream: false, ...(currentSpec ? { currentSpec } : {}) }),

@@ -1,6 +1,12 @@
 "use client";
 
-import { useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useSpecStore, type GenStage } from "@/store/useSpecStore";
 import { bookshelfSpec } from "@/lib/spec/examples";
 import {
@@ -10,11 +16,16 @@ import {
 } from "@/lib/spec/schema";
 import { GenerationHUD } from "./GenerationHUD";
 import type { MockScenario } from "@/lib/llm/mock";
+import {
+  ACCESS_KEY_STORAGE,
+  authorizationHeaders,
+} from "@/lib/access/client";
 
 /** Debug controls are compiled out of production builds. */
 const DEBUG_UI = process.env.NODE_ENV === "development";
 const MOCK_KEY = "workbench:mock";
 const SCENARIOS: MockScenario[] = ["success", "slow", "retry", "error"];
+type AccessState = "checking" | "open" | "locked" | "misconfigured";
 
 // The mock toggle lives in localStorage (it should survive the reloads you do
 // while tuning the wait UI), read through useSyncExternalStore so hydration
@@ -58,6 +69,10 @@ export function PromptBar() {
   const discardSalvage = useSpecStore((s) => s.discardSalvage);
 
   const [prompt, setPrompt] = useState("");
+  const [accessState, setAccessState] = useState<AccessState>("checking");
+  const [accessKey, setAccessKey] = useState("");
+  const [keyDraft, setKeyDraft] = useState("");
+  const [accessMessage, setAccessMessage] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const lastAttempt = useRef<{ prompt: string; currentSpec?: FurnitureSpec } | null>(
     null
@@ -80,6 +95,49 @@ export function PromptBar() {
     : "success";
   const setMockMode = (on: boolean, scenario: MockScenario) =>
     writeMock(on ? scenario : null);
+
+  const validateAccess = useCallback(async (candidate: string) => {
+    try {
+      const res = await fetch("/api/generate", {
+        headers: authorizationHeaders(candidate),
+        cache: "no-store",
+      });
+      const data = (await res.json().catch(() => null)) as {
+        required?: boolean;
+        configured?: boolean;
+        authorized?: boolean;
+      } | null;
+
+      if (!data?.configured) {
+        setAccessState("misconfigured");
+        setAccessMessage("The server owner must configure access keys.");
+        return;
+      }
+      if (!data.authorized) {
+        window.localStorage.removeItem(ACCESS_KEY_STORAGE);
+        setAccessKey("");
+        setAccessState("locked");
+        setAccessMessage(candidate ? "That access key is not valid." : "Enter your access key.");
+        return;
+      }
+
+      if (data.required) window.localStorage.setItem(ACCESS_KEY_STORAGE, candidate);
+      else window.localStorage.removeItem(ACCESS_KEY_STORAGE);
+      setAccessKey(candidate);
+      setKeyDraft("");
+      setAccessState("open");
+    } catch {
+      setAccessState("locked");
+      setAccessMessage("Could not verify access. Check your connection and try again.");
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void validateAccess(window.localStorage.getItem(ACCESS_KEY_STORAGE) ?? "");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [validateAccess]);
 
   const commit = (raw: unknown) => {
     const parsed = FurnitureSpecSchema.safeParse(raw);
@@ -178,7 +236,10 @@ export function PromptBar() {
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...authorizationHeaders(accessKey),
+        },
         body: JSON.stringify({
           prompt: promptText,
           ...(currentSpec ? { currentSpec } : {}),
@@ -186,6 +247,15 @@ export function PromptBar() {
         }),
         signal: controller.signal,
       });
+
+      if (res.status === 401) {
+        window.localStorage.removeItem(ACCESS_KEY_STORAGE);
+        setAccessKey("");
+        setAccessState("locked");
+        setAccessMessage("Your access key is no longer valid.");
+        failGenerating("A valid access key is required.");
+        return;
+      }
 
       const ctype = res.headers.get("content-type") ?? "";
       if (res.body && ctype.includes("ndjson")) {
@@ -205,7 +275,7 @@ export function PromptBar() {
   };
 
   const submit = () => {
-    if (generating) return;
+    if (generating || accessState !== "open") return;
     // In mock mode the prompt is ignored, so an empty box still runs.
     const trimmed = prompt.trim() || (mock ? "mock run" : "");
     if (!trimmed) return;
@@ -222,6 +292,49 @@ export function PromptBar() {
     const last = lastAttempt.current;
     if (last) run(last.prompt, last.currentSpec);
   };
+
+  if (accessState !== "open") {
+    return (
+      <div className="absolute bottom-4 left-1/2 w-full max-w-md -translate-x-1/2 px-4">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (accessState === "locked" && keyDraft.trim()) {
+              setAccessState("checking");
+              setAccessMessage("");
+              void validateAccess(keyDraft.trim());
+            }
+          }}
+          className="rounded-xl bg-white/95 p-3 shadow-lg backdrop-blur"
+        >
+          <div className="mb-2 text-sm font-semibold text-slate-800">
+            {accessState === "checking" ? "Checking access…" : "Invite-only access"}
+          </div>
+          {accessMessage && <p className="mb-2 text-xs text-slate-600">{accessMessage}</p>}
+          {accessState === "locked" && (
+            <div className="flex gap-2">
+              <input
+                type="password"
+                value={keyDraft}
+                onChange={(event) => setKeyDraft(event.target.value)}
+                autoComplete="off"
+                aria-label="Access key"
+                placeholder="Access key"
+                className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-800 outline-none focus:border-sky-500"
+              />
+              <button
+                type="submit"
+                disabled={!keyDraft.trim()}
+                className="rounded-lg bg-sky-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-40"
+              >
+                Unlock
+              </button>
+            </div>
+          )}
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="absolute bottom-4 left-1/2 w-full max-w-xl -translate-x-1/2 px-4">
