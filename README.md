@@ -21,6 +21,30 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). Without an API key everything except natural-language generation works (the hardcoded example spec renders, edits, and exports).
 
+## Invite-only access
+
+Production generation fails closed until `WORKBENCH_ACCESS_KEYS` is configured.
+The value is a server-only JSON object mapping stable user ids to manually
+issued keys; user ids appear in usage rows, but raw keys never do:
+
+```bash
+WORKBENCH_ACCESS_KEYS='{"martin":"replace-with-a-long-random-key"}'
+```
+
+Keys must be unique, 16–256 characters, and use the header-safe Bearer alphabet
+(letters, numbers, `-._~+/`, with optional trailing `=`). User ids may contain
+letters, numbers, `_`, and `-`. Give each invitee their own key. Generate a
+random hex key with `openssl rand -hex 24`. The browser validates it
+without making a model call and stores it in `localStorage`; every generation
+then sends it as a Bearer credential. Development remains open as the attributed
+`local` user when `WORKBENCH_ACCESS_KEYS` is unset.
+
+For the live golden CLI, provide one configured key separately:
+
+```bash
+WORKBENCH_ACCESS_KEY=replace-with-a-long-random-key npm run golden -- --yes
+```
+
 ## Architecture
 
 - `lib/spec/` — the core data model: Zod schema (mm, Y-up, min-corner box parts), cross-field validation (containment, sheet thickness, overlap/floating warnings), hand-authored example.
@@ -106,7 +130,7 @@ npm run usage:report -- [path]     # defaults to $USAGE_LOG_PATH, then ./usage.j
 
 Prints outcome mix, first-pass validity, retry rate, token totals, cached
 share, reasoning share, and — once rates exist — cost, broken down overall, by
-mode, and by case label.
+user, mode, and case label.
 
 ## Golden-prompt suite
 
