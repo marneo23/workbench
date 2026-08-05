@@ -9,10 +9,13 @@
     "lint": "eslint",
     "test": "vitest run",
     "golden": "tsx scripts/golden.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
     "usage:report": "tsx scripts/usage-report.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.17",
+    "@neondatabase/serverless": "^1.1.0",
+    "@next/env": "^16.2.10",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "ai": "^7.0.34",
