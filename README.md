@@ -37,9 +37,11 @@ Keys must be unique, 16–256 characters, and use the header-safe Bearer alphabe
 contain letters, numbers, `_`, and `-`; generate them randomly rather than from
 a name or email. Give each invitee their own key. Generate a
 random hex key with `openssl rand -hex 24`. The browser validates it
-without making a model call and stores it in `localStorage`; every generation
-then sends it as a Bearer credential. Development remains open as the attributed
-`local` user when `WORKBENCH_ACCESS_KEYS` is unset.
+without making a model call and stores it only for the current browser session;
+every generation then sends it as a Bearer credential. Production also enforces
+database-backed quotas of 5 requests per participant per minute and 50 per UTC
+day. Development remains open as the attributed `local` user when
+`WORKBENCH_ACCESS_KEYS` is unset.
 
 For the live golden CLI, provide one configured key separately:
 

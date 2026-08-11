@@ -42,6 +42,7 @@ import {
   bearerToken,
   resolveAccess,
 } from "@/lib/access/keys";
+import { enforceGenerationQuota } from "@/lib/access/rate-limit";
 
 export const maxDuration = 300;
 
@@ -576,6 +577,40 @@ export async function POST(request: Request) {
       { error: "A valid access key is required." },
       { status: 401, headers: { "WWW-Authenticate": "Bearer" } }
     );
+  }
+
+  const rateLimitDatabase = process.env.DATABASE_URL;
+  if (production && !rateLimitDatabase) {
+    return NextResponse.json(
+      { error: "Generation spend controls are not configured." },
+      { status: 503, headers: { "Cache-Control": "no-store" } }
+    );
+  }
+  if (rateLimitDatabase) {
+    try {
+      const quota = await enforceGenerationQuota(rateLimitDatabase, access.userId);
+      if (!quota.allowed) {
+        return NextResponse.json(
+          { error: "Generation limit reached. Try again later." },
+          {
+            status: 429,
+            headers: {
+              "Cache-Control": "no-store",
+              "Retry-After": String(quota.retryAfterSeconds),
+            },
+          }
+        );
+      }
+    } catch (error) {
+      console.error(
+        "generation rate limit failed",
+        error instanceof Error ? error.name : "unknown"
+      );
+      return NextResponse.json(
+        { error: "Generation spend controls are unavailable." },
+        { status: 503, headers: { "Cache-Control": "no-store" } }
+      );
+    }
   }
 
   const body = RequestSchema.safeParse(await request.json().catch(() => null));
