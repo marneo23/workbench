@@ -10,6 +10,7 @@ import {
 } from "@/lib/usage/sink";
 
 const record = buildUsageRecord({
+  artifactId: "550e8400-e29b-41d4-a716-446655440000",
   userId: "alice",
   model: "test-model",
   mode: "refinement",
@@ -43,6 +44,7 @@ const rates = {
 describe("usageDatabaseRow", () => {
   it("maps one generation request to dashboard-ready relational fields", () => {
     expect(usageDatabaseRow(record, rates)).toMatchObject({
+      artifactId: "550e8400-e29b-41d4-a716-446655440000",
       ts: "2026-08-05T12:00:00.000Z",
       userId: "alice",
       model: "test-model",

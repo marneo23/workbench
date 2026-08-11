@@ -30,6 +30,14 @@ import {
 } from "@/lib/usage/record";
 import { createUsageSink, safeWrite } from "@/lib/usage/sink";
 import {
+  buildGenerationArtifact,
+  type ArtifactAttempt,
+} from "@/lib/artifacts/record";
+import {
+  createArtifactSink,
+  safeWriteArtifact,
+} from "@/lib/artifacts/sink";
+import {
   accessStatus,
   bearerToken,
   resolveAccess,
@@ -40,6 +48,7 @@ export const maxDuration = 300;
 const RequestSchema = z.object({
   prompt: z.string().min(1).max(2000),
   currentSpec: FurnitureSpecSchema.optional(),
+  parentArtifactId: z.string().uuid().optional(),
   /** false → blocking JSON fallback; default follows DISABLE_STREAMING env. */
   stream: z.boolean().optional(),
   /** debug: replay the reference spec locally, no LLM call and no cost */
@@ -94,15 +103,20 @@ const COULD_NOT_BUILD =
   "Couldn't produce a valid buildable spec for that request. Try being more specific about dimensions.";
 
 const sink = createUsageSink();
+const artifactSink = createArtifactSink();
 
 /** Per-request facts the usage record needs that the messages array has lost. */
 type RequestMeta = {
+  generationId: string;
   userId: string;
   mode: "new" | "refinement";
   label?: string;
   promptChars: number;
   inputSpecChars?: number;
   inputParts?: number;
+  prompt: string;
+  inputSpec?: FurnitureSpec;
+  parentArtifactId?: string;
 };
 
 function buildRetryTurns(
@@ -146,6 +160,10 @@ function runStream(
       let errorCode: string | undefined;
       let emittedChars = 0;
       let outputParts = 0;
+      let finalSpec: FurnitureSpec | undefined;
+      let finalWarnings: ValidationIssue[] = [];
+      const artifactAttempts: ArtifactAttempt[] = [];
+      let terminalError: ReturnType<typeof mapError> | undefined;
 
       // Parts go out through here so a cancelled request still leaves a record
       // of how much output was paid for before the abort.
@@ -158,7 +176,6 @@ function runStream(
 
       try {
         let messages = baseMessages;
-        let finalSpec: FurnitureSpec | null = null;
         let lastErrors: ValidationIssue[] = [];
 
         for (let attempt = 0; attempt < MAX_ATTEMPTS && !finalSpec; attempt++) {
@@ -241,6 +258,11 @@ function runStream(
               lastErrors = [
                 { code: "no-object", message: "model did not produce a valid spec" },
               ];
+              artifactAttempts.push({
+                attempt: attempts.length,
+                rawResponse: e.text ?? "",
+                validationErrors: lastErrors,
+              });
               messages = buildRetryTurns(baseMessages, e.text ?? "", lastErrors);
               continue; // retry
             }
@@ -257,10 +279,15 @@ function runStream(
           send({ type: "stage", stage: "validating" });
           const { errors, warnings } = validateSpec(obj);
           noteAttempt(errors.length);
+          artifactAttempts.push({
+            attempt: attempts.length,
+            responseSpec: obj,
+            validationErrors: errors,
+          });
           if (errors.length === 0) {
             finalSpec = obj;
+            finalWarnings = warnings;
             succeeded = true;
-            send({ type: "done", spec: obj, warnings });
           } else {
             lastErrors = errors;
             messages = buildRetryTurns(baseMessages, JSON.stringify(obj), errors);
@@ -268,28 +295,19 @@ function runStream(
         }
 
         if (!finalSpec) {
-          send({
-            type: "error",
+          terminalError = {
             status: 422,
             error: COULD_NOT_BUILD,
             details: lastErrors.map((e) => e.message),
-          });
+          };
         }
-        controller.close();
       } catch (e) {
         if (request.signal.aborted) {
           cancelled = true;
-          controller.close();
-          return;
+        } else {
+          terminalError = mapError(e);
+          errorCode = String(terminalError.status);
         }
-        const mapped = mapError(e);
-        errorCode = String(mapped.status);
-        try {
-          send({ type: "error", ...mapped });
-        } catch {
-          // controller already closed
-        }
-        controller.close();
       } finally {
         // In `finally`, not on the success path: a request that failed
         // validation twice or was cancelled mid-stream has still been paid for,
@@ -305,27 +323,65 @@ function runStream(
             estimated: true,
           });
         }
-        await safeWrite(
-          sink,
-          buildUsageRecord({
-            userId: meta.userId,
-            model: MODEL,
-            mode: meta.mode,
-            label: meta.label,
-            streaming: true,
-            attempts,
-            succeeded,
-            cancelled,
-            apiError: errorCode !== undefined,
-            errorCode,
-            durationMs: Date.now() - startedAt,
-            promptChars: meta.promptChars,
-            inputSpecChars: meta.inputSpecChars,
-            inputParts: meta.inputParts,
-            emittedChars,
-            outputParts,
+        const usageRecord = buildUsageRecord({
+          artifactId: meta.generationId,
+          userId: meta.userId,
+          model: MODEL,
+          mode: meta.mode,
+          label: meta.label,
+          streaming: true,
+          attempts,
+          succeeded,
+          cancelled,
+          apiError: errorCode !== undefined,
+          errorCode,
+          durationMs: Date.now() - startedAt,
+          promptChars: meta.promptChars,
+          inputSpecChars: meta.inputSpecChars,
+          inputParts: meta.inputParts,
+          emittedChars,
+          outputParts,
+        });
+        await safeWrite(sink, usageRecord);
+        const artifactStored = await safeWriteArtifact(
+          artifactSink,
+          buildGenerationArtifact({
+            generationId: meta.generationId,
+            participantId: meta.userId,
+            parentGenerationId: meta.parentArtifactId,
+            prompt: meta.prompt,
+            inputSpec: meta.inputSpec,
+            outputSpec: finalSpec,
+            warnings: finalWarnings,
+            attempts: artifactAttempts,
+            outcome: usageRecord.outcome,
           })
         );
+        if (!cancelled) {
+          try {
+            if (finalSpec) {
+              send({
+                type: "done",
+                spec: finalSpec,
+                warnings: finalWarnings,
+                ...(artifactStored ? { artifactId: meta.generationId } : {}),
+              });
+            } else if (terminalError) {
+              send({
+                type: "error",
+                ...terminalError,
+                ...(artifactStored ? { artifactId: meta.generationId } : {}),
+              });
+            }
+          } catch {
+            // Client disconnected while persistence was finishing.
+          }
+        }
+        try {
+          controller.close();
+        } catch {
+          // Client already disconnected.
+        }
       }
     },
   });
@@ -343,6 +399,12 @@ async function generateBlocking(
   let succeeded = false;
   let errorCode: string | undefined;
   let outputParts = 0;
+  let finalSpec: FurnitureSpec | undefined;
+  let finalWarnings: ValidationIssue[] = [];
+  const artifactAttempts: ArtifactAttempt[] = [];
+  let responseBody: Record<string, unknown> | undefined;
+  let responseStatus = 200;
+  let artifactStored = false;
 
   try {
     let messages = baseMessages;
@@ -378,55 +440,95 @@ async function generateBlocking(
           lastErrors = [
             { code: "no-object", message: "model did not produce a valid spec" },
           ];
+          artifactAttempts.push({
+            attempt: attempts.length,
+            rawResponse: e.text ?? "",
+            validationErrors: lastErrors,
+          });
           messages = buildRetryTurns(baseMessages, e.text ?? "", lastErrors);
           continue;
         }
         const m = mapError(e);
         errorCode = String(m.status);
-        return NextResponse.json(
-          { error: m.error, ...(m.details ? { details: m.details } : {}) },
-          { status: m.status }
-        );
+        responseBody = {
+          error: m.error,
+          ...(m.details ? { details: m.details } : {}),
+        };
+        responseStatus = m.status;
+        break;
       }
 
       const { errors, warnings } = validateSpec(obj);
       noteAttempt(errors.length);
+      artifactAttempts.push({
+        attempt: attempts.length,
+        responseSpec: obj,
+        validationErrors: errors,
+      });
       if (errors.length === 0) {
         succeeded = true;
         outputParts = obj.parts.length;
-        return NextResponse.json({ spec: obj, warnings });
+        finalSpec = obj;
+        finalWarnings = warnings;
+        responseBody = {
+          spec: obj,
+          warnings,
+        };
+        break;
       }
       lastErrors = errors;
       messages = buildRetryTurns(baseMessages, JSON.stringify(obj), errors);
     }
 
-    return NextResponse.json(
-      { error: COULD_NOT_BUILD, details: lastErrors.map((e) => e.message) },
-      { status: 422 }
-    );
+    if (!responseBody) {
+      responseBody = {
+        error: COULD_NOT_BUILD,
+        details: lastErrors.map((e) => e.message),
+      };
+      responseStatus = 422;
+    }
   } finally {
-    // Every `return` above passes through here, including the error paths.
-    await safeWrite(
-      sink,
-      buildUsageRecord({
-        userId: meta.userId,
-        model: MODEL,
-        mode: meta.mode,
-        label: meta.label,
-        streaming: false,
-        attempts,
-        succeeded,
-        cancelled: request.signal.aborted,
-        apiError: errorCode !== undefined,
-        errorCode,
-        durationMs: Date.now() - startedAt,
-        promptChars: meta.promptChars,
-        inputSpecChars: meta.inputSpecChars,
-        inputParts: meta.inputParts,
-        outputParts,
+    // Persist before publishing an artifact id in the response below.
+    const usageRecord = buildUsageRecord({
+      artifactId: meta.generationId,
+      userId: meta.userId,
+      model: MODEL,
+      mode: meta.mode,
+      label: meta.label,
+      streaming: false,
+      attempts,
+      succeeded,
+      cancelled: request.signal.aborted,
+      apiError: errorCode !== undefined,
+      errorCode,
+      durationMs: Date.now() - startedAt,
+      promptChars: meta.promptChars,
+      inputSpecChars: meta.inputSpecChars,
+      inputParts: meta.inputParts,
+      outputParts,
+    });
+    await safeWrite(sink, usageRecord);
+    artifactStored = await safeWriteArtifact(
+      artifactSink,
+      buildGenerationArtifact({
+        generationId: meta.generationId,
+        participantId: meta.userId,
+        parentGenerationId: meta.parentArtifactId,
+        prompt: meta.prompt,
+        inputSpec: meta.inputSpec,
+        outputSpec: finalSpec,
+        warnings: finalWarnings,
+        attempts: artifactAttempts,
+        outcome: usageRecord.outcome,
       })
     );
   }
+
+  if (!responseBody) {
+    throw new Error("Generation completed without a response.");
+  }
+  if (artifactStored) responseBody.artifactId = meta.generationId;
+  return NextResponse.json(responseBody, { status: responseStatus });
 }
 
 const NDJSON_HEADERS = {
@@ -480,7 +582,15 @@ export async function POST(request: Request) {
   if (!body.success) {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
-  const { prompt, currentSpec, stream, mock, mockScenario, label } = body.data;
+  const {
+    prompt,
+    currentSpec,
+    parentArtifactId,
+    stream,
+    mock,
+    mockScenario,
+    label,
+  } = body.data;
 
   // Debug mode short-circuits everything above the protocol: no API key needed,
   // no tokens spent. Ignored in production unless explicitly allowed.
@@ -506,12 +616,16 @@ export async function POST(request: Request) {
   // spec back, so its cost tracks part count, not the size of the edit. Kept as
   // its own dimension because that is the distinction Phase C acts on.
   const meta: RequestMeta = {
+    generationId: crypto.randomUUID(),
     userId: access.userId,
     mode: currentSpec ? "refinement" : "new",
     label,
     promptChars: prompt.length,
     inputSpecChars: currentSpec ? JSON.stringify(currentSpec).length : undefined,
     inputParts: currentSpec?.parts.length,
+    prompt,
+    inputSpec: currentSpec,
+    parentArtifactId,
   };
 
   if (!(stream ?? STREAMING_DEFAULT)) {

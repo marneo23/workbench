@@ -53,6 +53,7 @@ function writeMock(value: MockScenario | null) {
  */
 export function PromptBar() {
   const spec = useSpecStore((s) => s.spec);
+  const currentArtifactId = useSpecStore((s) => s.currentArtifactId);
   const status = useSpecStore((s) => s.status);
   const error = useSpecStore((s) => s.error);
   const salvage = useSpecStore((s) => s.salvage);
@@ -74,9 +75,11 @@ export function PromptBar() {
   const [keyDraft, setKeyDraft] = useState("");
   const [accessMessage, setAccessMessage] = useState("");
   const abortRef = useRef<AbortController | null>(null);
-  const lastAttempt = useRef<{ prompt: string; currentSpec?: FurnitureSpec } | null>(
-    null
-  );
+  const lastAttempt = useRef<{
+    prompt: string;
+    currentSpec?: FurnitureSpec;
+    parentArtifactId?: string;
+  } | null>(null);
 
   const generating = status === "generating";
   // Untouched example → new design; anything else → refinement.
@@ -139,14 +142,17 @@ export function PromptBar() {
     return () => window.clearTimeout(timer);
   }, [validateAccess]);
 
-  const commit = (raw: unknown) => {
+  const commit = (raw: unknown, artifactId?: unknown) => {
     const parsed = FurnitureSpecSchema.safeParse(raw);
     if (!parsed.success) {
       failGenerating("Server returned an invalid spec.");
       return;
     }
     setStage("rendering");
-    setSpec(parsed.data); // clears error, resets selection + scale figure
+    setSpec(
+      parsed.data,
+      typeof artifactId === "string" ? artifactId : null
+    ); // clears error, resets selection + scale figure
     clearPending();
     setStatus("idle");
     setPrompt("");
@@ -174,14 +180,17 @@ export function PromptBar() {
         setStage("dimensions");
         break;
       case "done":
-        commit(ev.spec);
+        commit(ev.spec, ev.artifactId);
         break;
       case "error": {
         const details = Array.isArray(ev.details)
           ? (ev.details as string[]).slice(0, 3).join("; ")
           : "";
         const message = String(ev.error ?? "Generation failed.");
-        failGenerating(details ? `${message} (${details})` : message);
+        failGenerating(
+          details ? `${message} (${details})` : message,
+          typeof ev.artifactId === "string" ? ev.artifactId : undefined
+        );
         break;
       }
     }
@@ -219,10 +228,14 @@ export function PromptBar() {
     }
   };
 
-  const run = async (promptText: string, currentSpec?: FurnitureSpec) => {
+  const run = async (
+    promptText: string,
+    currentSpec?: FurnitureSpec,
+    parentArtifactId?: string
+  ) => {
     const controller = new AbortController();
     abortRef.current = controller;
-    lastAttempt.current = { prompt: promptText, currentSpec };
+    lastAttempt.current = { prompt: promptText, currentSpec, parentArtifactId };
     beginGenerating();
 
     // Advance past "understanding" if the model is still thinking before any
@@ -243,6 +256,7 @@ export function PromptBar() {
         body: JSON.stringify({
           prompt: promptText,
           ...(currentSpec ? { currentSpec } : {}),
+          ...(parentArtifactId ? { parentArtifactId } : {}),
           ...(mock ? { mock: true, mockScenario } : {}),
         }),
         signal: controller.signal,
@@ -263,8 +277,13 @@ export function PromptBar() {
       } else {
         // Blocking fallback (or an early error) returns plain JSON.
         const data = await res.json().catch(() => null);
-        if (data?.spec) commit(data.spec);
-        else failGenerating(data?.error ?? `Generation failed (${res.status}).`);
+        if (data?.spec) commit(data.spec, data.artifactId);
+        else {
+          failGenerating(
+            data?.error ?? `Generation failed (${res.status}).`,
+            typeof data?.artifactId === "string" ? data.artifactId : undefined
+          );
+        }
       }
     } catch {
       if (controller.signal.aborted) return; // user cancelled — already idle
@@ -279,7 +298,11 @@ export function PromptBar() {
     // In mock mode the prompt is ignored, so an empty box still runs.
     const trimmed = prompt.trim() || (mock ? "mock run" : "");
     if (!trimmed) return;
-    run(trimmed, pristine || mock ? undefined : spec);
+    run(
+      trimmed,
+      pristine || mock ? undefined : spec,
+      pristine || mock ? undefined : currentArtifactId ?? undefined
+    );
   };
 
   const cancel = () => {
@@ -290,7 +313,7 @@ export function PromptBar() {
   const retry = () => {
     if (generating) return;
     const last = lastAttempt.current;
-    if (last) run(last.prompt, last.currentSpec);
+    if (last) run(last.prompt, last.currentSpec, last.parentArtifactId);
   };
 
   if (accessState !== "open") {
@@ -438,6 +461,12 @@ export function PromptBar() {
           </button>
         )}
       </div>
+      {!mock && (
+        <p className="mt-1 px-2 text-center text-[10px] text-slate-500">
+          Prompts and generated designs are stored for owner-only review, expire
+          after 90 days, and are deleted by daily cleanup.
+        </p>
+      )}
     </div>
   );
 }

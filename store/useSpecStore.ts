@@ -31,6 +31,8 @@ export interface PendingSpec {
 
 interface SpecState {
   spec: FurnitureSpec;
+  /** Server artifact that produced the current spec; used only for ancestry. */
+  currentArtifactId: string | null;
   selectedPartId: string | null;
   status: EditorStatus;
   stage: GenStage;
@@ -43,11 +45,13 @@ interface SpecState {
    * good; whatever was built stays on screen until they decide.
    */
   salvage: PendingSpec | null;
+  /** Artifact produced by the failed request that created `salvage`. */
+  salvageArtifactId: string | null;
   error: string | null;
   /** scale-figure position [x, z] in scene mm; null = default beside the model */
   scaleFigurePos: [number, number] | null;
   /** replace the whole spec (LLM result); clears stale selection */
-  setSpec: (spec: FurnitureSpec) => void;
+  setSpec: (spec: FurnitureSpec, artifactId?: string | null) => void;
   updatePart: (id: string, patch: { size?: Size3; position?: Vec3 }) => void;
   /** direct-manipulation resize: set part geometry and grow the bbox to fit */
   resizePart: (id: string, size: Size3, position: Vec3) => void;
@@ -68,7 +72,7 @@ interface SpecState {
   /** cancel/abort: back to idle, keep prompt + last committed spec */
   endGenerating: () => void;
   /** failure: back to idle, but rescue whatever had already assembled */
-  failGenerating: (error: string) => void;
+  failGenerating: (error: string, artifactId?: string) => void;
   /** adopt the rescued partial as the current spec, editable as normal */
   keepSalvage: () => void;
   /** throw the rescued partial away and return to the last committed spec */
@@ -79,22 +83,26 @@ export const useSpecStore = create<SpecState>()(
   temporal(
     (set) => ({
       spec: bookshelfSpec,
+      currentArtifactId: null,
       selectedPartId: null,
       status: "idle",
       stage: "understanding",
       pending: null,
       salvage: null,
+      salvageArtifactId: null,
       error: null,
       scaleFigurePos: null,
 
-      setSpec: (spec) =>
+      setSpec: (spec, artifactId = null) =>
         set((state) => ({
           spec,
+          currentArtifactId: artifactId,
           selectedPartId: spec.parts.some((p) => p.id === state.selectedPartId)
             ? state.selectedPartId
             : null,
           error: null,
           salvage: null,
+          salvageArtifactId: null,
           // New piece: send the scale figure back to its default spot beside it.
           scaleFigurePos: null,
         })),
@@ -144,6 +152,7 @@ export const useSpecStore = create<SpecState>()(
           stage: "understanding",
           pending: null,
           salvage: null, // a fresh attempt supersedes the last rescued partial
+          salvageArtifactId: null,
           error: null,
         }),
       setStage: (stage) => set({ stage }),
@@ -156,16 +165,25 @@ export const useSpecStore = create<SpecState>()(
             : {}
         ),
       clearPending: () => set({ pending: null }),
-      endGenerating: () => set({ status: "idle", pending: null }),
-
-      failGenerating: (error) =>
-        set((state) => ({
+      endGenerating: () =>
+        set({
           status: "idle",
-          error,
-          // An empty assembly is nothing to offer — only rescue real parts.
-          salvage: state.pending?.parts.length ? state.pending : null,
           pending: null,
-        })),
+          salvageArtifactId: null,
+        }),
+
+      failGenerating: (error, artifactId) =>
+        set((state) => {
+          const salvage = state.pending?.parts.length ? state.pending : null;
+          return {
+            status: "idle",
+            error,
+            // An empty assembly is nothing to offer — only rescue real parts.
+            salvage,
+            salvageArtifactId: salvage ? artifactId ?? null : null,
+            pending: null,
+          };
+        }),
 
       keepSalvage: () =>
         set((state) => {
@@ -184,19 +202,26 @@ export const useSpecStore = create<SpecState>()(
           };
           return {
             spec,
+            currentArtifactId: state.salvageArtifactId,
             salvage: null,
+            salvageArtifactId: null,
             error: null,
             selectedPartId: null,
             scaleFigurePos: null,
           };
         }),
 
-      discardSalvage: () => set({ salvage: null, error: null }),
+      discardSalvage: () =>
+        set({ salvage: null, salvageArtifactId: null, error: null }),
     }),
     {
-      // Only the spec belongs in undo history — not selection or async status.
-      partialize: (state) => ({ spec: state.spec }),
-      equality: (a, b) => a.spec === b.spec,
+      // The ancestry id must travel with its spec through undo/redo.
+      partialize: (state) => ({
+        spec: state.spec,
+        currentArtifactId: state.currentArtifactId,
+      }),
+      equality: (a, b) =>
+        a.spec === b.spec && a.currentArtifactId === b.currentArtifactId,
       limit: 100,
     }
   )

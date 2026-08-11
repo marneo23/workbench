@@ -128,6 +128,8 @@ export type UsageRecord = {
   /** Discriminator, so a log can carry more than one record type later. */
   kind: "generate";
   ts: string;
+  /** Correlates this compact row with owner-only content stored separately. */
+  artifactId?: string;
   /** Stable attribution from the server-side access-key mapping; never the key. */
   userId: string;
   model: string;
@@ -165,6 +167,7 @@ export type UsageRecord = {
 };
 
 export type BuildRecordInput = {
+  artifactId?: string;
   userId: string;
   model: string;
   mode: "new" | "refinement";
@@ -190,6 +193,7 @@ export function buildUsageRecord(input: BuildRecordInput): UsageRecord {
   return {
     kind: "generate",
     ts: (input.now?.() ?? new Date()).toISOString(),
+    artifactId: input.artifactId,
     userId: input.userId,
     model: input.model,
     mode: input.mode,

@@ -29,6 +29,7 @@ export const stdoutSink: UsageSink = {
 export const nullSink: UsageSink = { write() {} };
 
 export type UsageDatabaseRow = {
+  artifactId: string | null;
   ts: string;
   userId: string;
   model: string;
@@ -54,6 +55,7 @@ export function usageDatabaseRow(
 ): UsageDatabaseRow {
   const costUsd = estimateCostUsd(record.model, record.tokens, rates);
   return {
+    artifactId: record.artifactId ?? null,
     ts: record.ts,
     userId: record.userId,
     model: record.model,
@@ -96,11 +98,11 @@ async function loadNeonWriter(connectionString: string): Promise<UsageRowWriter>
   return async (row) => {
     await sql`
       INSERT INTO generation_usage (
-        ts, user_id, model, mode, label, parts, attempts,
+        artifact_id, ts, user_id, model, mode, label, parts, attempts,
         tokens_in, tokens_out, tokens_cached, duration_ms, outcome,
         cost_cents, complete, estimated, error_code, record
       ) VALUES (
-        ${row.ts}, ${row.userId}, ${row.model}, ${row.mode}, ${row.label},
+        ${row.artifactId}, ${row.ts}, ${row.userId}, ${row.model}, ${row.mode}, ${row.label},
         ${row.parts}, ${row.attempts}, ${row.tokensIn}, ${row.tokensOut},
         ${row.tokensCached}, ${row.durationMs}, ${row.outcome}, ${row.costCents},
         ${row.complete}, ${row.estimated}, ${row.errorCode},
