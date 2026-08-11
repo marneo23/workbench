@@ -29,8 +29,9 @@ export const Vec3Schema = z.object({
 export const MaterialSchema = z.object({
   id: z
     .string()
+    .max(64)
     .describe('short kebab-case id unique within the spec, e.g. "ply-18"'),
-  name: z.string().describe('human name, e.g. "18mm birch plywood"'),
+  name: z.string().max(120).describe('human name, e.g. "18mm birch plywood"'),
   kind: z.enum(["sheet", "solid", "rod"]),
   thickness: z
     .number()
@@ -43,14 +44,15 @@ export const MaterialSchema = z.object({
 export const PartSchema = z.object({
   id: z
     .string()
+    .max(64)
     .describe(
       'short kebab-case id unique within the spec, e.g. "side-left". Preserve ids when refining an existing spec.'
     ),
-  name: z.string().describe('human name, e.g. "Left side panel"'),
+  name: z.string().max(120).describe('human name, e.g. "Left side panel"'),
   shape: z.literal("box"),
   size: Size3Schema,
   position: Vec3Schema,
-  materialId: z.string().describe("id of an entry in materials[]"),
+  materialId: z.string().max(64).describe("id of an entry in materials[]"),
   grain: z
     .enum(["length", "width", "none"])
     .optional()
@@ -59,21 +61,23 @@ export const PartSchema = z.object({
     ),
   joinery: z
     .string()
+    .max(500)
     .optional()
     .describe('free-text joinery note, e.g. "screwed + glued to sides"'),
 });
 
 export const FurnitureSpecSchema = z.object({
   version: z.literal(1),
-  name: z.string().describe("short human name for the piece"),
+  name: z.string().max(120).describe("short human name for the piece"),
   units: z.literal("mm"),
   bbox: Size3Schema.describe(
     "overall bounding box of the finished piece; every part must fit inside it"
   ),
-  materials: z.array(MaterialSchema).min(1),
+  materials: z.array(MaterialSchema).min(1).max(20),
   parts: z.array(PartSchema).min(1).max(60),
   notes: z
     .string()
+    .max(2000)
     .optional()
     .describe("assembly or construction notes for the builder"),
 });

@@ -1,0 +1,17 @@
+# Never upload local credentials or private review material.
+.env*
+_for-claude/
+*.pem
+
+# Local/generated artifacts that are not part of the application.
+.vercel/
+.next/
+node_modules/
+coverage/
+out/
+build/
+golden-out/
+usage.jsonl
+bookshelf-sample.pdf
+*.tsbuildinfo
+*.log
