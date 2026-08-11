@@ -20,6 +20,7 @@ import {
   ACCESS_KEY_STORAGE,
   authorizationHeaders,
 } from "@/lib/access/client";
+import { credentialStorage } from "@/lib/access/browser-storage";
 
 /** Debug controls are compiled out of production builds. */
 const DEBUG_UI = process.env.NODE_ENV === "development";
@@ -117,15 +118,15 @@ export function PromptBar() {
         return;
       }
       if (!data.authorized) {
-        window.localStorage.removeItem(ACCESS_KEY_STORAGE);
+        credentialStorage().removeItem(ACCESS_KEY_STORAGE);
         setAccessKey("");
         setAccessState("locked");
         setAccessMessage(candidate ? "That access key is not valid." : "Enter your access key.");
         return;
       }
 
-      if (data.required) window.localStorage.setItem(ACCESS_KEY_STORAGE, candidate);
-      else window.localStorage.removeItem(ACCESS_KEY_STORAGE);
+      if (data.required) credentialStorage().setItem(ACCESS_KEY_STORAGE, candidate);
+      else credentialStorage().removeItem(ACCESS_KEY_STORAGE);
       setAccessKey(candidate);
       setKeyDraft("");
       setAccessState("open");
@@ -137,7 +138,7 @@ export function PromptBar() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void validateAccess(window.localStorage.getItem(ACCESS_KEY_STORAGE) ?? "");
+      void validateAccess(credentialStorage().getItem(ACCESS_KEY_STORAGE) ?? "");
     }, 0);
     return () => window.clearTimeout(timer);
   }, [validateAccess]);

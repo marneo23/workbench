@@ -6,6 +6,7 @@ import {
   OWNER_KEY_STORAGE,
   authorizationHeaders,
 } from "@/lib/access/client";
+import { credentialStorage } from "@/lib/access/browser-storage";
 import type {
   DashboardOutcomes,
   DashboardSummary,
@@ -110,7 +111,7 @@ export function OwnerUsageDashboard() {
         | null;
 
       if (response.status === 401) {
-        window.localStorage.removeItem(OWNER_KEY_STORAGE);
+        credentialStorage().removeItem(OWNER_KEY_STORAGE);
         setOwnerKey("");
         setDashboard(null);
         setState("locked");
@@ -129,7 +130,7 @@ export function OwnerUsageDashboard() {
         return;
       }
 
-      window.localStorage.setItem(OWNER_KEY_STORAGE, candidate);
+      credentialStorage().setItem(OWNER_KEY_STORAGE, candidate);
       setOwnerKey(candidate);
       setDraft("");
       setDashboard(body);
@@ -204,13 +205,13 @@ export function OwnerUsageDashboard() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void loadDashboard(window.localStorage.getItem(OWNER_KEY_STORAGE) ?? "");
+      void loadDashboard(credentialStorage().getItem(OWNER_KEY_STORAGE) ?? "");
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadDashboard]);
 
   const lock = () => {
-    window.localStorage.removeItem(OWNER_KEY_STORAGE);
+    credentialStorage().removeItem(OWNER_KEY_STORAGE);
     setOwnerKey("");
     setDashboard(null);
     setArtifact(null);
