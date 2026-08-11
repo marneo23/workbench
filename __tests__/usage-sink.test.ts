@@ -135,7 +135,7 @@ describe("createUsageSink", () => {
 
     await expect(safeWrite(sink, record)).resolves.toBeUndefined();
     expect(database.write).toHaveBeenCalledOnce();
-    expect(error).toHaveBeenCalledWith("usage sink failed", failure);
+    expect(error).toHaveBeenCalledWith("usage sink failed", "Error");
     log.mockRestore();
     error.mockRestore();
   });

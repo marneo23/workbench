@@ -192,7 +192,10 @@ export function createUsageSink(
 export async function safeWrite(sink: UsageSink, record: UsageRecord): Promise<void> {
   try {
     await sink.write(record);
-  } catch (e) {
-    console.error("usage sink failed", e);
+  } catch (error) {
+    console.error(
+      "usage sink failed",
+      error instanceof Error ? error.name : "unknown"
+    );
   }
 }
