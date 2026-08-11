@@ -20,7 +20,11 @@ import {
   ACCESS_KEY_STORAGE,
   authorizationHeaders,
 } from "@/lib/access/client";
-import { credentialStorage } from "@/lib/access/browser-storage";
+import {
+  clearCredential,
+  credentialStorage,
+  readCredential,
+} from "@/lib/access/browser-storage";
 
 /** Debug controls are compiled out of production builds. */
 const DEBUG_UI = process.env.NODE_ENV === "development";
@@ -118,7 +122,7 @@ export function PromptBar() {
         return;
       }
       if (!data.authorized) {
-        credentialStorage().removeItem(ACCESS_KEY_STORAGE);
+        clearCredential(ACCESS_KEY_STORAGE);
         setAccessKey("");
         setAccessState("locked");
         setAccessMessage(candidate ? "That access key is not valid." : "Enter your access key.");
@@ -126,7 +130,7 @@ export function PromptBar() {
       }
 
       if (data.required) credentialStorage().setItem(ACCESS_KEY_STORAGE, candidate);
-      else credentialStorage().removeItem(ACCESS_KEY_STORAGE);
+      else clearCredential(ACCESS_KEY_STORAGE);
       setAccessKey(candidate);
       setKeyDraft("");
       setAccessState("open");
@@ -138,7 +142,7 @@ export function PromptBar() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void validateAccess(credentialStorage().getItem(ACCESS_KEY_STORAGE) ?? "");
+      void validateAccess(readCredential(ACCESS_KEY_STORAGE) ?? "");
     }, 0);
     return () => window.clearTimeout(timer);
   }, [validateAccess]);
@@ -264,7 +268,7 @@ export function PromptBar() {
       });
 
       if (res.status === 401) {
-        window.localStorage.removeItem(ACCESS_KEY_STORAGE);
+        clearCredential(ACCESS_KEY_STORAGE);
         setAccessKey("");
         setAccessState("locked");
         setAccessMessage("Your access key is no longer valid.");

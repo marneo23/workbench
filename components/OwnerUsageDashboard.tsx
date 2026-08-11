@@ -6,7 +6,11 @@ import {
   OWNER_KEY_STORAGE,
   authorizationHeaders,
 } from "@/lib/access/client";
-import { credentialStorage } from "@/lib/access/browser-storage";
+import {
+  clearCredential,
+  credentialStorage,
+  readCredential,
+} from "@/lib/access/browser-storage";
 import type {
   DashboardOutcomes,
   DashboardSummary,
@@ -111,7 +115,7 @@ export function OwnerUsageDashboard() {
         | null;
 
       if (response.status === 401) {
-        credentialStorage().removeItem(OWNER_KEY_STORAGE);
+        clearCredential(OWNER_KEY_STORAGE);
         setOwnerKey("");
         setDashboard(null);
         setState("locked");
@@ -205,13 +209,13 @@ export function OwnerUsageDashboard() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void loadDashboard(credentialStorage().getItem(OWNER_KEY_STORAGE) ?? "");
+      void loadDashboard(readCredential(OWNER_KEY_STORAGE) ?? "");
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadDashboard]);
 
   const lock = () => {
-    credentialStorage().removeItem(OWNER_KEY_STORAGE);
+    clearCredential(OWNER_KEY_STORAGE);
     setOwnerKey("");
     setDashboard(null);
     setArtifact(null);
