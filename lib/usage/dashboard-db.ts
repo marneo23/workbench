@@ -38,6 +38,15 @@ export async function queryUsageDashboard(
     sql<DashboardTimelineRow>`
       SELECT
         id,
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM generation_artifacts
+            WHERE generation_artifacts.id = generation_usage.artifact_id
+              AND generation_artifacts.expires_at > now()
+          ) THEN artifact_id
+          ELSE NULL
+        END AS artifact_id,
         ts,
         user_id,
         mode,

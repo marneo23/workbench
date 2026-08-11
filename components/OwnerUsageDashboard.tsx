@@ -11,6 +11,7 @@ import type {
   DashboardSummary,
   UsageDashboard,
 } from "@/lib/usage/dashboard";
+import type { GenerationArtifactDetail } from "@/lib/artifacts/dashboard-db";
 
 type ViewState = "checking" | "locked" | "open" | "misconfigured" | "error";
 
@@ -89,6 +90,10 @@ export function OwnerUsageDashboard() {
   const [message, setMessage] = useState("");
   const [dashboard, setDashboard] = useState<UsageDashboard | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [artifact, setArtifact] = useState<GenerationArtifactDetail | null>(null);
+  const [artifactLoading, setArtifactLoading] = useState(false);
+  const [artifactDeleting, setArtifactDeleting] = useState(false);
+  const [artifactMessage, setArtifactMessage] = useState("");
 
   const loadDashboard = useCallback(async (candidate: string) => {
     setOwnerKey(candidate);
@@ -137,6 +142,66 @@ export function OwnerUsageDashboard() {
     }
   }, []);
 
+  const loadArtifact = useCallback(
+    async (id: string) => {
+      setArtifactLoading(true);
+      setArtifactMessage("");
+      try {
+        const response = await fetch(`/api/owner/artifacts/${id}`, {
+          headers: authorizationHeaders(ownerKey),
+          cache: "no-store",
+        });
+        const body = (await response.json().catch(() => null)) as
+          | GenerationArtifactDetail
+          | { error?: string }
+          | null;
+        if (!response.ok || !body || !("prompt" in body)) {
+          setArtifact(null);
+          setArtifactMessage(
+            (body as { error?: string } | null)?.error ??
+              "Could not load the generation artifact."
+          );
+          return;
+        }
+        setArtifact(body);
+      } catch {
+        setArtifact(null);
+        setArtifactMessage("Could not reach artifact storage.");
+      } finally {
+        setArtifactLoading(false);
+      }
+    },
+    [ownerKey]
+  );
+
+  const deleteArtifact = useCallback(async () => {
+    if (!artifact || !window.confirm("Delete this stored prompt and response? Usage totals will remain.")) {
+      return;
+    }
+    setArtifactDeleting(true);
+    setArtifactMessage("");
+    try {
+      const response = await fetch(`/api/owner/artifacts/${artifact.id}`, {
+        method: "DELETE",
+        headers: authorizationHeaders(ownerKey),
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        setArtifactMessage(body?.error ?? "Could not delete the artifact.");
+        return;
+      }
+      setArtifact(null);
+      setArtifactMessage("Stored prompt and response deleted.");
+      await loadDashboard(ownerKey);
+    } catch {
+      setArtifactMessage("Could not reach artifact storage.");
+    } finally {
+      setArtifactDeleting(false);
+    }
+  }, [artifact, loadDashboard, ownerKey]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadDashboard(window.localStorage.getItem(OWNER_KEY_STORAGE) ?? "");
@@ -148,6 +213,7 @@ export function OwnerUsageDashboard() {
     window.localStorage.removeItem(OWNER_KEY_STORAGE);
     setOwnerKey("");
     setDashboard(null);
+    setArtifact(null);
     setState("locked");
     setMessage("Enter the owner key.");
   };
@@ -316,14 +382,14 @@ export function OwnerUsageDashboard() {
 
         <section className="mt-8">
           <div className="mb-3">
-            <h2 className="text-lg font-semibold text-white">Per-user usage</h2>
-            <p className="mt-1 text-xs text-slate-500">Stable invite identities, never raw access keys</p>
+            <h2 className="text-lg font-semibold text-white">Per-participant usage</h2>
+            <p className="mt-1 text-xs text-slate-500">Stable pseudonymous IDs, never names or raw access keys</p>
           </div>
           <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/60">
             <table className="w-full min-w-[820px] text-left text-sm">
               <thead className="border-b border-slate-800 bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
                 <tr>
-                  <th className="px-5 py-3 font-medium">User</th>
+                  <th className="px-5 py-3 font-medium">Participant</th>
                   <th className="px-4 py-3 font-medium">Requests</th>
                   <th className="px-4 py-3 font-medium">Input</th>
                   <th className="px-4 py-3 font-medium">Output</th>
@@ -364,7 +430,7 @@ export function OwnerUsageDashboard() {
               <thead className="border-b border-slate-800 bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
                 <tr>
                   <th className="px-5 py-3 font-medium">When</th>
-                  <th className="px-4 py-3 font-medium">User</th>
+                  <th className="px-4 py-3 font-medium">Participant</th>
                   <th className="px-4 py-3 font-medium">Mode</th>
                   <th className="px-4 py-3 font-medium">Parts</th>
                   <th className="px-4 py-3 font-medium">Attempts</th>
@@ -372,6 +438,7 @@ export function OwnerUsageDashboard() {
                   <th className="px-4 py-3 font-medium">Duration</th>
                   <th className="px-4 py-3 font-medium">Cost</th>
                   <th className="px-5 py-3 font-medium">Outcome</th>
+                  <th className="px-5 py-3 font-medium">Artifact</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/80">
@@ -386,14 +453,106 @@ export function OwnerUsageDashboard() {
                     <td className="px-4 py-4 font-mono">{formatDuration(item.durationMs)}</td>
                     <td className="px-4 py-4 font-mono">{formatCost(item.costCents)}</td>
                     <td className="px-5 py-4"><span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs">{item.outcome}</span></td>
+                    <td className="px-5 py-4">
+                      {item.artifactId ? (
+                        <button
+                          type="button"
+                          onClick={() => void loadArtifact(item.artifactId!)}
+                          disabled={artifactLoading}
+                          className="rounded-lg border border-sky-700/70 px-3 py-1.5 text-xs font-semibold text-sky-300 transition hover:border-sky-400 disabled:opacity-50"
+                        >
+                          Inspect
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-600">Not stored</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
                 {dashboard.timeline.length === 0 && (
-                  <tr><td colSpan={9} className="px-5 py-10 text-center text-slate-500">The timeline will appear after the first recorded generation.</td></tr>
+                  <tr><td colSpan={10} className="px-5 py-10 text-center text-slate-500">The timeline will appear after the first recorded generation.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
+
+          {(artifact || artifactMessage || artifactLoading) && (
+            <section className="mt-5 rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-white">Generation artifact</h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Owner-only; expires after 90 days and is deleted by daily cleanup.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  {artifact && (
+                    <button
+                      type="button"
+                      onClick={() => void deleteArtifact()}
+                      disabled={artifactDeleting}
+                      className="rounded-lg border border-rose-700/70 px-3 py-1.5 text-xs font-semibold text-rose-300 hover:border-rose-400 disabled:opacity-50"
+                    >
+                      {artifactDeleting ? "Deleting…" : "Delete content"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setArtifact(null);
+                      setArtifactMessage("");
+                    }}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              {artifactLoading && <p className="mt-4 text-sm text-slate-400">Loading artifact…</p>}
+              {artifactMessage && (
+                <p role="status" className="mt-4 rounded-lg bg-slate-950 px-3 py-2 text-sm text-slate-300">
+                  {artifactMessage}
+                </p>
+              )}
+              {artifact && !artifactLoading && (
+                <div className="mt-5 grid gap-5 lg:grid-cols-2">
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Participant</p>
+                      <p className="mt-1 font-mono text-sm text-sky-300">{artifact.participantId}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Prompt</p>
+                      <p className="mt-1 whitespace-pre-wrap rounded-xl bg-slate-950 p-3 text-sm leading-6 text-slate-200">{artifact.prompt}</p>
+                    </div>
+                    {artifact.warnings.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Warnings</p>
+                        <pre className="mt-1 max-h-64 overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-amber-200">{JSON.stringify(artifact.warnings, null, 2)}</pre>
+                      </div>
+                    )}
+                    {artifact.inputSpec && (
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Input spec</p>
+                        <pre className="mt-1 max-h-96 overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-300">{JSON.stringify(artifact.inputSpec, null, 2)}</pre>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Final validated response</p>
+                    <pre className="mt-1 max-h-[48rem] overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-emerald-100">{artifact.outputSpec ? JSON.stringify(artifact.outputSpec, null, 2) : "No validated response was produced."}</pre>
+                    {artifact.attempts.length > 1 && (
+                      <details className="mt-4">
+                        <summary className="cursor-pointer text-xs font-semibold text-sky-300">Retry diagnostics ({artifact.attempts.length} attempts)</summary>
+                        <pre className="mt-2 max-h-96 overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-300">{JSON.stringify(artifact.attempts, null, 2)}</pre>
+                      </details>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
         </section>
       </div>
     </main>

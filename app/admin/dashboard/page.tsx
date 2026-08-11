@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { OwnerUsageDashboard } from "@/components/OwnerUsageDashboard";
 
 export const metadata: Metadata = {
-  title: "Owner usage · Workbench",
-  description: "Private Workbench generation usage dashboard.",
+  title: "Admin dashboard · Workbench",
+  description: "Private Workbench administration and usage dashboard.",
 };
 
 export default function OwnerUsagePage() {

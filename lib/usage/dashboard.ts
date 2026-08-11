@@ -17,6 +17,7 @@ export type DashboardAggregateRow = {
 
 export type DashboardTimelineRow = {
   id: number | string;
+  artifact_id: string | null;
   ts: string | Date;
   user_id: string;
   mode: UsageRecord["mode"];
@@ -46,6 +47,7 @@ export type DashboardUser = DashboardSummary & { userId: string };
 
 export type DashboardTimelineItem = {
   id: string;
+  artifactId: string | null;
   ts: string;
   userId: string;
   mode: UsageRecord["mode"];
@@ -140,6 +142,7 @@ export function buildUsageDashboard(
   const timeline = timelineRows.map(
     (row): DashboardTimelineItem => ({
       id: String(row.id),
+      artifactId: row.artifact_id,
       ts: row.ts instanceof Date ? row.ts.toISOString() : row.ts,
       userId: row.user_id,
       mode: row.mode,

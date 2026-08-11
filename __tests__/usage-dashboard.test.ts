@@ -31,6 +31,7 @@ const timeline = (
   over: Partial<DashboardTimelineRow> = {}
 ): DashboardTimelineRow => ({
   id: "7",
+  artifact_id: "550e8400-e29b-41d4-a716-446655440000",
   ts: "2026-08-05T12:00:00.000Z",
   user_id: "alice",
   mode: "new",
@@ -93,6 +94,7 @@ describe("buildUsageDashboard", () => {
     });
     expect(result.timeline[0]).toEqual({
       id: "7",
+      artifactId: "550e8400-e29b-41d4-a716-446655440000",
       ts: "2026-08-05T12:00:00.000Z",
       userId: "alice",
       mode: "new",
@@ -152,6 +154,7 @@ describe("queryUsageDashboard", () => {
     expect(result.timeline).toHaveLength(1);
     expect(calls).toHaveLength(2);
     expect(calls[1].sql).toContain("ORDER BY ts DESC, id DESC");
+    expect(calls[1].sql).toContain("artifact_id");
     expect(calls[1].values).toEqual([100]);
   });
 });
