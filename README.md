@@ -24,16 +24,18 @@ Open [http://localhost:3000](http://localhost:3000). Without an API key everythi
 ## Invite-only access
 
 Production generation fails closed until `WORKBENCH_ACCESS_KEYS` is configured.
-The value is a server-only JSON object mapping stable user ids to manually
-issued keys; user ids appear in usage rows, but raw keys never do:
+The value is a server-only JSON object mapping stable random participant IDs to
+manually issued keys. Only pseudonymous IDs appear in storage; names and raw
+keys never do:
 
 ```bash
-WORKBENCH_ACCESS_KEYS='{"martin":"replace-with-a-long-random-key"}'
+WORKBENCH_ACCESS_KEYS='{"p_a1b2c3d4e5f6":"replace-with-a-long-random-key"}'
 ```
 
 Keys must be unique, 16–256 characters, and use the header-safe Bearer alphabet
-(letters, numbers, `-._~+/`, with optional trailing `=`). User ids may contain
-letters, numbers, `_`, and `-`. Give each invitee their own key. Generate a
+(letters, numbers, `-._~+/`, with optional trailing `=`). Participant IDs may
+contain letters, numbers, `_`, and `-`; generate them randomly rather than from
+a name or email. Give each invitee their own key. Generate a
 random hex key with `openssl rand -hex 24`. The browser validates it
 without making a model call and stores it in `localStorage`; every generation
 then sends it as a Bearer credential. Development remains open as the attributed
@@ -104,6 +106,7 @@ npm run dev | grep '^workbench.usage ' | sed 's/^workbench.usage //' > usage.jso
 |-----|--------|
 | `DATABASE_URL` | Also persist each real generation as a Neon Postgres row. |
 | `WORKBENCH_OWNER_KEY` | Separate Bearer credential for the private usage dashboard. |
+| `CRON_SECRET` | Bearer credential Vercel Cron sends to daily artifact cleanup. |
 | `USAGE_LOG_PATH` | Also append rows to this JSONL file. |
 | `USAGE_LOG=0` | Disable usage logging entirely. |
 | `USAGE_RATES` | JSON rate table for cost estimates; unset means token counts only. |
@@ -125,11 +128,18 @@ Pull to a temporary file and merge the database variables; `vercel env pull`
 overwrites its target, so pointing it directly at an existing `.env.local` can
 erase local-only values.
 
-The migration creates `generation_usage`, with dashboard-ready columns for the
-stable user id, timestamp, generation mode, part and attempt counts, input,
+The migrations create `generation_usage`, with dashboard-ready columns for the
+stable pseudonymous participant ID, timestamp, generation mode, part and attempt counts, input,
 output, and cached tokens, duration, outcome, and estimated cost. The complete
 usage record is retained as `jsonb` for diagnostics. Missing `USAGE_RATES`
 produces a SQL `NULL` cost rather than a fabricated estimate.
+
+Real generations also write owner-only content to `generation_artifacts`: the
+prompt, refinement input spec, final validated response, warnings, retry
+diagnostics, and parent-artifact lineage. Artifacts expire after 90 days and
+are hidden immediately at expiry, then deleted by an authenticated daily Vercel
+cron (and opportunistically on subsequent writes). They are loaded individually
+rather than included in the aggregate dashboard response.
 
 The Neon driver and connection are initialized lazily on the first write, so
 builds remain valid before provisioning. Database writes are additive: stdout
@@ -138,15 +148,18 @@ but never turn a successful generation into a failed request.
 
 ### Owner usage dashboard
 
-Open `/owner/usage` to view all-time request, token, cached-token, cost, retry,
-and outcome totals; the same metrics per stable invite identity; and the latest
-100 generation requests. The page stores its accepted owner key locally in the
+Open `/admin/dashboard` to view all-time request, token, cached-token, cost, retry,
+and outcome totals; the same metrics per pseudonymous participant; and the latest
+100 generation requests. Stored prompt/response artifacts can be inspected and
+deleted individually. The page stores its accepted owner key locally in the
 browser and sends it only as a Bearer credential to `/api/owner/usage`.
 
 Set `WORKBENCH_OWNER_KEY` to a unique, random, header-safe value of 16–256
 characters. It must be different from every value in `WORKBENCH_ACCESS_KEYS`;
 the server rejects shared-key configuration, and an ordinary invite key cannot
 read cross-user data. Owner access fails closed in development and production.
+Artifact detail and deletion use `/api/owner/artifacts/[id]` with the same
+fail-closed owner authorization and `Cache-Control: no-store`.
 
 ```bash
 vercel env add WORKBENCH_OWNER_KEY production,preview --sensitive
